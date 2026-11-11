@@ -4,7 +4,7 @@
 
 - 零运行时依赖（不 import 任何 `@deepseek-ai/*` 包），以 `file:` 插件挂进 DSH。
 - 不改 `agent-loop`、不改 `dsh-subagent`。
-- 当前状态：**64 项单测全绿**，已在真实 DSH 客户端（0.2.2-rc.1）跑通代际继承、成员互发邮件、终止态自动唤醒。
+- 当前状态：**80 项单测全绿**，已在真实 DSH 客户端（0.2.2-rc.1）跑通代际继承、成员互发邮件、终止态自动唤醒。
 
 > 目录位置：`.experiments/agent-team/`。不参与 DSH 仓库的 pnpm workspace / 构建 / 门禁，git 里是未跟踪状态。
 > 运行时数据（账本、邮箱存储）默认写到 `$DSH_HOME/agent-team/lineage`，不落进用户仓库。
@@ -90,7 +90,7 @@ agent-team: preset "agent-team" was not registered: <原因>
       config:
         directory: C:/Users/aivm/.dsh/agent-team/lineage
         providerName: agent-team
-        maxGenerations: 8          # 每个成员的代数上限
+        maxGenerations: 8          # 内部：每个成员的化身上限
         maxDepth: 1                # 子 agent 不再委派
         delivery: caller           # caller=只返结果；parent=额外通知父
         registerTools: true
@@ -117,17 +117,18 @@ await g1.result
 const g2 = await team.rotate({ parent: agent, memberId: 'audit', prompt: '复核你自己上一轮的发现' })
 ```
 
+> **代是内部实现。** 协作台面上只有成员与信箱：邮件写给成员、由成员读，工具参数与返回值里不出现代次、childId 或前任 id。插件内部仍按代记账（账本记录每次化身），用来决定"现在由谁读这封信"或"是否需要新起一次"。
 ## 4. 工具
 
 挂载后 `ctx.get('seededFork')` 拿到 API，并注册七个模型可见工具：
 
 | 工具 | 作用 |
 |---|---|
-| `seeded_fork` | 为 `member_id` 起一代子会话（`task` 是该代指令；`seed_from` 可指定前任） |
-| `seeded_rotate` | 起该成员下一代，继承最新**已完成**的一代（未落定会等；跨进程明确报错） |
-| `seeded_chain` | 列出世代、相位、前任 |
-| `member_roster` | 列出本编排已登记的成员（含 `orchestrator` 地址） |
-| `member_dispatch` | 按信箱内容按需造转世：把未读邮件按收件人分组，给每个收件成员起下一代（正在跑的跳过） |
+| `seeded_fork` | 启动/继续一个成员（`task` 是它这次要做的；同伴关系写在 `peers`） |
+| `seeded_rotate` | 让成员在保留此前工作的前提下再做一次（上一次未落定会等；跨进程明确报错） |
+| `seeded_chain` | **内部诊断**：列出该成员已记录的各次化身 |
+| `member_roster` | 列出本编排的成员与忙碌状态（含 `orchestrator` 地址） |
+| `member_dispatch` | 按信箱内容按需启动成员：把未读邮件按收件人分组，给每个收件成员开工（正在跑的跳过） |
 | `member_post` | 给某成员或 `orchestrator` 投信；**目标必须已存在**（未启动的 id 直接拒绝）；目标已终止时自动转世 |
 | `member_inbox` | 读写给**自己地址**的邮件（默认读完即消费），并报告**服务器总量**与其中"不是给自己的"条数 |
 | `seeded_preset_diagnose` | 报告 preset 注册结果、错误、`standard` 是否可用 |

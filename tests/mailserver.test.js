@@ -77,8 +77,8 @@ test('member tools resolve identities and exchange one message between members',
 
   const roster = await tools.get('member_roster').execute({}, { agent: { session: { id: first.childId } } })
   assert.deepEqual(roster.members.map(member => member.member_id), ['orchestrator', 'audit'])
-  assert.equal(roster.members[0].phase, 'orchestrator')
-  assert.equal(roster.members[1].generation, 0)
+  assert.equal(roster.members[0].state, 'orchestrator')
+  assert.equal(roster.members[1].state, 'idle')
 
   const posted = await tools.get('member_post').execute(
     { to_member: 'audit', body: 'confirm b.ts:88 as well', topic: 'follow-up' },
@@ -115,7 +115,7 @@ test('a message from the orchestrator reaches the member', async () => {
   assert.equal(inbox.messages[0].from_member, 'orchestrator')
 })
 
-test('the child preamble names the member and generation and is not duplicated', async () => {
+test('the child preamble names the member and is not duplicated', async () => {
   const dir = await tempDir()
   const parent = { session: fakeSession('parent-pre', []) }
   const { ctx, sessions, starts } = fakeCtx()
@@ -124,14 +124,14 @@ test('the child preamble names the member and generation and is not duplicated',
 
   await api.fork({ parent, memberId: 'audit', prompt: 'audit the handlers' })
   const prompt = starts[0].spec.request.prompt
-  assert.match(prompt[0].text, /^\[member "audit" generation 0\]/u)
+  assert.match(prompt[0].text, /^\[member "audit"\]/u)
   assert.match(prompt[0].text, /member_inbox/u)
   assert.equal(prompt[1].text, 'audit the handlers', 'the task stays its own block after the preamble')
 
   await api.rotate({ parent, memberId: 'audit', prompt: 'go deeper' })
   const second = starts[1].spec.request.prompt
   assert.equal(second.filter(block => block.text?.startsWith('[member "')).length, 1)
-  assert.match(second[0].text, /generation 1/u)
+  assert.match(second[0].text, /^\[member "audit"\]/u)
 })
 
 test('posting to an unknown member is rejected', async () => {
@@ -366,7 +366,7 @@ test('member_dispatch starts a generation from the mail and leases it', async ()
   assert.equal(first.dispatched.length, 1)
   assert.equal(first.dispatched[0].member_id, 'produce')
   assert.equal(first.dispatched[0].messages, 1)
-  assert.equal(first.dispatched[0].generation, 1, 'produce gained a generation for the mail')
+  assert.equal(first.dispatched[0].state, 'started')
 })
 
 test('member_dispatch leaves a running member to its own inbox', async () => {
@@ -479,13 +479,12 @@ test('mail whose generation finished without reading is handed to the next one',
 
   const first = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
   assert.equal(first.dispatched.length, 1)
-  const leasedChild = first.dispatched[0].child_id
   await new Promise(resolve => setTimeout(resolve, 30))
 
   // The dispatched generation ended without reading, so the mail is still unread.
   const second = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
   assert.equal(second.dispatched.length, 1, 'an expired lease is re-dispatched')
-  assert.notEqual(second.dispatched[0].child_id, leasedChild)
+  
 })
 
 test('mail addressed to a member that does not exist yet creates that member', async () => {
@@ -500,7 +499,7 @@ test('mail addressed to a member that does not exist yet creates that member', a
   const result = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
   assert.equal(result.dispatched.length, 1)
   assert.equal(result.dispatched[0].member_id, 'review')
-  assert.equal(result.dispatched[0].generation, 0, 'the member is created on demand')
+  assert.equal(result.dispatched[0].state, 'started', 'the member is created on demand')
   assert.equal((await api.chain('review')).length, 1)
 })
 
