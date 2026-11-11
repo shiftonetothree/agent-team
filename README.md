@@ -164,6 +164,27 @@ Before each step, call member_inbox ... To reach another member, call member_ros
 
 子 agent 的轮次里没有可挂钩的插件事件，所以这是能做到的最强约束（提示 + 工具描述 + playbook）。
 
+#### 协作关系由编排者设计，不由成员自己摸索
+
+成员之间默认太"安静"：每个成员只管做完自己的 task 就上报，所有协调都绕主 agent 转述。所以提示分两层：
+
+| 层 | 内容 |
+|---|---|
+| 编排者的 playbook / 首轮提示 | 派任务时要**同时设计协作图**：每个 `task` 写明该成员该找哪些同伴、发什么、什么情况才升级给编排者。编排者是调度者和仲裁者，不是交换机。 |
+| 成员的 preamble（`fork`/`rotate` 自动拼接） | 直接列出同伴名单，并说明"需要事实、核对、交接就直接 `member_post` 给那个同伴，不要请编排者转述"；同时提醒"同伴还在等你时不要结束这一代，否则编排者得起新的一代" |
+
+生成的 preamble 长这样：
+
+```
+[member "audit" generation 1]
+Your peers are "orchestrator", "ground", "produce". When you need a fact, a check,
+or a hand-off, message that peer directly with member_post instead of asking the
+orchestrator to relay it; the orchestrator is for decisions and scope, not for
+passing notes between members.
+Before each step, call member_inbox ...
+```
+
+同伴名单来自账本里已登记的成员（`memberRoster`），自己不会出现在名单里。
 #### 信箱不空时：按邮件造转世
 
 主 agent 收信有**两条渠道**，两条都会报服务器总量：

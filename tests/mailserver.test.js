@@ -427,3 +427,19 @@ test('a settled member appends the mailbox notice to the parent session', async 
   assert.match(appended[0].message.content[0].text, /mailbox server holds 1 message/u)
   assert.match(appended[0].message.content[0].text, /member_dispatch/u)
 })
+
+test('the member preamble names the peers it may talk to', async () => {
+  const { parent, api, starts } = await wakeSetup({ autoWake: false })
+  await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await api.fork({ parent, memberId: 'produce', prompt: 'produce' })
+  await api.fork({ parent, memberId: 'review', prompt: 'review' })
+
+  const latest = starts.at(-1).spec.request.prompt[0].text
+  const peersLine = latest.split('\n').find(line => line.startsWith('Your peers are'))
+  assert.ok(peersLine !== undefined, 'the preamble names peers')
+  assert.match(peersLine, /"audit"/u)
+  assert.match(peersLine, /"produce"/u)
+  assert.doesNotMatch(peersLine, /"review"/u, 'a member is not its own peer')
+  assert.match(latest, /member_post/u)
+  assert.match(latest, /not for passing notes between members/u)
+})

@@ -193,14 +193,22 @@ function abortable(signal, promise) {
  * the previous generation still visible.
  *
  * @param {any[]} blocks - the caller's prompt blocks.
- * @param {{ memberId: string, generation: number }} identity - the child's identity.
+ * @param {{ memberId: string, generation: number, peers?: readonly string[] }} identity - the child's identity.
  * @returns {any[]} prompt blocks with the preamble first.
  */
 export function withMemberPreamble(blocks, identity) {
+  const peers = (identity.peers ?? []).filter(peer => peer !== identity.memberId)
+  const peerLine = peers.length === 0
+    ? 'You can reach the orchestrator with member_post("orchestrator", …) when you need a decision only it can make.\n'
+    : `Your peers are ${peers.map(peer => `"${peer}"`).join(', ')}. When you need a fact, a check, or a hand-off, `
+      + 'message that peer directly with member_post instead of asking the orchestrator to relay it; '
+      + 'the orchestrator is for decisions and scope, not for passing notes between members.\n'
   const text = `[member "${identity.memberId}" generation ${identity.generation}]\n`
+    + peerLine
     + 'Before each step, call member_inbox to read messages that other members left for you. '
     + 'A message addressed to your previous generation is still delivered to you until it is read. '
-    + 'To reach another member, call member_roster for exact ids, then member_post.\n'
+    + 'If a peer is waiting on you, answer it before you finish: a generation that ends while a peer still '
+    + 'needs it forces the orchestrator to start another one.\n'
   const rest = Array.isArray(blocks) ? blocks : []
   const first = rest[0]
   if (first?.type === 'text' && typeof first.text === 'string' && first.text.startsWith('[member "')) {
@@ -443,7 +451,11 @@ export function createSeededFork(ctx, config = {}) {
           parent,
           prompt: config.memberPreamble === false
             ? toContent(options.prompt)
-            : withMemberPreamble(toContent(options.prompt), { memberId, generation: reservation.generation }),
+            : withMemberPreamble(toContent(options.prompt), {
+                memberId,
+                generation: reservation.generation,
+                peers: (await memberRoster(journal)).map(member => member.member_id),
+              }),
           maxDepth: options.maxDepth ?? maxDepth,
           ...(options.agentPreset === undefined ? {} : { agentPreset: options.agentPreset }),
           ...(options.persona === undefined ? {} : { persona: options.persona }),
@@ -692,7 +704,9 @@ export function buildToolDefinitions(getApi) {
       name: 'seeded_fork',
       description: 'Start a member of this orchestration as a child session that inherits the completed transcript of a previous generation. '
         + 'Each call creates a new child session; a later call with the same member_id inherits this one. Use it when the same role must come back and re-examine its own earlier work; '
-        + 'do not use it for independent parallel work, which is what the plain subagent tool is for.',
+        + 'do not use it for independent parallel work, which is what the plain subagent tool is for. '
+        + 'Write the peer links into task: which members this one should message with member_post, about what, and what it decides alone. '
+        + 'Members may talk to each other directly, so route through the orchestrator only for decisions and scope.',
       parameters: memberParameters,
       output: { schema: resultSchema, render },
       async execute(args, exec) {
