@@ -1,6 +1,6 @@
 {
   "name": "@commonworks/agent-team",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Agent-team runtime for DeepSeek Harness: seeded-fork subagent generations, a durable lineage journal, and a point-to-point mail server so members can message each other",
   "type": "module",
   "main": "src/index.js",

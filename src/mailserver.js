@@ -60,6 +60,9 @@ export class MailServer {
   /** @type {Promise<unknown>} */
   #queue = Promise.resolve()
 
+  /** @type {boolean} */
+  #quarantine = false
+
   /**
    * @param {object} options
    * @param {string} options.sessionId - orchestrator session id.
@@ -96,21 +99,32 @@ export class MailServer {
   }
 
   /**
-   * Load the store once. A missing or unreadable file starts empty: messages are
-   * best-effort coordination, never authoritative state.
+   * Load the store once. A missing file starts empty; an unreadable one is set
+   * aside rather than treated as empty, because rewriting it would erase the
+   * mailbox of members whose generations already ended.
    * @returns {Promise<void>}
    */
   async #load() {
     if (this.#loaded) return
     this.#loaded = true
+    let text
     try {
-      const parsed = JSON.parse(await readFile(this.file, 'utf8'))
+      text = await readFile(this.file, 'utf8')
+    } catch (error) {
+      if (/** @type {any} */ (error)?.code === 'ENOENT') return
+      this.#quarantine = true
+      return
+    }
+    try {
+      const parsed = JSON.parse(text)
       if (parsed?.version === MAIL_VERSION && Array.isArray(parsed.messages)) {
         this.#messages = parsed.messages.filter(message => message !== null && typeof message === 'object')
+        return
       }
-    } catch (error) {
-      if (/** @type {any} */ (error)?.code !== 'ENOENT') this.#messages = []
+    } catch {
+      // Fall through: an unparseable store keeps its bytes for recovery.
     }
+    this.#quarantine = true
   }
 
   /**
@@ -122,6 +136,11 @@ export class MailServer {
     const tmp = `${this.file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
     const write = async () => {
       await mkdir(this.dir, { recursive: true })
+      if (this.#quarantine) {
+        // Keep the unreadable bytes instead of overwriting them with an empty store.
+        await rename(this.file, `${this.file}.corrupt-${Date.now()}`).catch(() => {})
+        this.#quarantine = false
+      }
       await writeFile(tmp, payload, 'utf8')
       let attempt = 0
       for (;;) {
@@ -207,7 +226,11 @@ export class MailServer {
       }
       const yours = this.#messages.filter(addressedToReader).length
       return {
-        messages: selected.map(message => ({ ...message, readers: [...message.readers] })),
+        messages: selected.map(message => ({
+          ...message,
+          readers: [...message.readers],
+          handled: message.readers.length > 0,
+        })),
         unacked: visible.filter(message => !message.readers.includes(reader.childId)).length,
         // Board occupancy, not content: a reader may know that the server still
         // holds mail without learning who wrote to whom.

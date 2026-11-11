@@ -604,3 +604,39 @@ test('a generation that read its mail is not retried', async () => {
   await new Promise(resolve => setTimeout(resolve, 60))
   assert.equal((await api.chain('audit')).length, 1, 'read mail needs no new generation')
 })
+
+test('the mailbox survives an incarnation: the next generation still sees the mail', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'the handler at a.ts:31 is unguarded' },
+    { agent: { session: { id: audit.childId } } },
+  )
+  // Generation 0 reads and acknowledges it.
+  await tools.get('member_inbox').execute({}, { agent: { session: { id: audit.childId } } })
+  await audit.result
+  await new Promise(resolve => setTimeout(resolve, 30))
+
+  // Generation 1 inherits the member's mailbox, including what generation 0 handled.
+  const next = await api.rotate({ parent, memberId: 'audit', prompt: 'continue' })
+  const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: next.childId } } })
+  assert.equal(inbox.messages.length, 1, 'the message is still in the member mailbox')
+  assert.equal(inbox.messages[0].state, 'handled-earlier')
+  assert.equal(inbox.total, 1)
+})
+
+test('an unreadable store is set aside instead of being overwritten empty', async () => {
+  const { readFile, writeFile, readdir } = await import('node:fs/promises')
+  const { MailServer } = await import('../src/mailserver.js')
+  const dir = await mkdtemp(join(tmpdir(), 'agent-team-corrupt-'))
+  const box = new MailServer({ sessionId: 's-corrupt', dir })
+  await writeFile(box.filePath, '{ this is not json', 'utf8')
+  const fresh = new MailServer({ sessionId: 's-corrupt', dir })
+  await fresh.post({ from: { childId: 'c1', memberId: 'a', generation: 0 }, toMember: 'b', body: 'new mail' })
+  const files = await readdir(dir)
+  const quarantined = files.filter(file => file.includes('.corrupt-'))
+  assert.equal(quarantined.length, 1, 'the unreadable bytes were kept')
+  assert.match(await readFile(join(dir, quarantined[0]), 'utf8'), /this is not json/u)
+  const stored = JSON.parse(await readFile(fresh.filePath, 'utf8'))
+  assert.equal(stored.messages.length, 1)
+})

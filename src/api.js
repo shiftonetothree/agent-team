@@ -1167,8 +1167,9 @@ export function buildToolDefinitions(getApi) {
                   topic: { type: 'string' },
                   body: { type: 'string' },
                   at: { type: 'number' },
+                  state: { type: 'string' },
                 },
-                required: ['id', 'from_member', 'from_generation', 'topic', 'body', 'at'],
+                required: ['id', 'from_member', 'from_generation', 'topic', 'body', 'at', 'state'],
                 additionalProperties: false,
               },
             },
@@ -1179,9 +1180,15 @@ export function buildToolDefinitions(getApi) {
           additionalProperties: false,
         },
         render: (_args, value) => {
-          const body = value.messages.length === 0
-            ? '(no new messages for you)'
-            : value.messages.map(message => `[${message.from_member}#${message.from_generation}${message.topic === '' ? '' : ` ${message.topic}`}] ${message.body}`).join('\n\n')
+          const fresh = value.messages.filter(message => message.state === 'new')
+          const handled = value.messages.filter(message => message.state === 'handled-earlier')
+          const line = message => `[${message.from_member}#${message.from_generation}${message.topic === '' ? '' : ` ${message.topic}`}] ${message.body}`
+          const body = fresh.length === 0 && handled.length === 0
+            ? '(no messages)'
+            : [
+                fresh.length === 0 ? '(nothing new)' : fresh.map(line).join('\n\n'),
+                handled.length === 0 ? '' : `handled by an earlier generation of yours: ${handled.map(line).join('\n\n')}`,
+              ].filter(part => part !== '').join('\n\n')
           const occupancy = value.total === 0
             ? 'mailbox: empty'
             : `mailbox: ${value.total} in total, ${value.others} addressed to others`
@@ -1201,7 +1208,7 @@ export function buildToolDefinitions(getApi) {
           reader: { childId: caller.childId, memberId: caller.memberId, generation: caller.generation },
           limit: args.limit,
           ack: args.ack !== false,
-          includeRead: args.include_read === true,
+          includeRead: args.include_read !== false,
         })
         return {
           messages: result.messages.map(message => ({
@@ -1211,6 +1218,7 @@ export function buildToolDefinitions(getApi) {
             topic: message.topic ?? '',
             body: message.body,
             at: message.at,
+            state: message.handled ? 'handled-earlier' : 'new',
           })),
           total: result.total,
           others: result.others,
