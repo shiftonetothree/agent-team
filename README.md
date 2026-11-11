@@ -1,30 +1,30 @@
 # @commonworks/agent-team
 
-给 DeepSeek Harness 的**纯插件**智能体团队运行时：用「父 agent fork 子 agent」模拟「子 agent 续跑」，并配一个**点对点邮箱服务器**，让成员之间能在不改内核的前提下互相通信。
+给 DeepSeek Harness 的**纯插件**智能体团队运行时：用「父 agent fork 子 agent」实现子 agent 的代际延续，并配一个**点对点邮箱服务器**，让成员之间能在不改内核的前提下互相通信。
 
-- 零运行时依赖（不 import 任何 `@deepseek-ai/*` 包），以 `file:` 插件挂进官方 DSH。
-- 不改 `agent-loop`、不改 `dsh-subagent`、不注册任何 preset 之外的全局状态。
-- 当前状态：**64 项单测全绿，已在真实 DSH 客户端（0.2.2-rc.1）跑通**转世继承、成员互发邮件、终止态自动唤醒。
+- 零运行时依赖（不 import 任何 `@deepseek-ai/*` 包），以 `file:` 插件挂进 DSH。
+- 不改 `agent-loop`、不改 `dsh-subagent`。
+- 当前状态：**64 项单测全绿**，已在真实 DSH 客户端（0.2.2-rc.1）跑通代际继承、成员互发邮件、终止态自动唤醒。
 
 > 目录位置：`.experiments/agent-team/`。不参与 DSH 仓库的 pnpm workspace / 构建 / 门禁，git 里是未跟踪状态。
-> 运行时数据（账本、邮箱存储）默认写到 `$DSH_HOME/agent-team/lineage`，绝不落进用户仓库。
+> 运行时数据（账本、邮箱存储）默认写到 `$DSH_HOME/agent-team/lineage`，不落进用户仓库。
 
 ---
 
-## 1. 为什么需要它（上游缺口）
+## 1. DSH 的能力边界
 
-核验官方 0.2.1-rc.5 / 0.2.2-rc.1 源码后确认：
+本插件只依赖 DSH 本体已有的接口。下面这些边界决定了设计：
 
-| # | 能力 | 官方状态 |
+| # | DSH 现状 | 后果 |
 |---|---|---|
-| 1 | `fork` 的种子来源 | **只能**是委托方（父）的已完成轮次前缀 |
-| 2 | provider 能否知道"用哪个会话当种子" | **没有通道**：`ContinuableCreateRequest` 只有 `{ cwd, sessionId, parent, signal }` |
-| 3 | `startActivation` 复用已存在的 child id | 直接 `DUPLICATE_CHILD` |
-| 4 | `sendMessage` 续跑 | 可用，但只有 `MessageId`，无结果回执、无 `activeOnly`、不能覆盖 `maxTokens/outputSchema` |
-| 5 | 子 ↔ 子直接发消息 | **不存在**：授权只有 direct parent ↔ direct continuable child |
-| 6 | 子 agent 结算后的多次收发 | 运行时已释放；官方没有"再唤起同一成员"的入口 |
+| 1 | `fork` 的种子只能是委托方（父）的已完成轮次前缀 | 子会话无法从"另一个子会话"继承历史 |
+| 2 | `ContinuableCreateRequest` 只有 `{ cwd, sessionId, parent, signal }` | provider 拿不到"用哪个会话当种子"的参数 |
+| 3 | `startActivation` 复用已存在的 child id → `DUPLICATE_CHILD` | 一个会话不能被"重启"成新的一代 |
+| 4 | `sendMessage` 只返回 `MessageId` | 投递成功不可断言为"这一轮的结果" |
+| 5 | 消息授权只有 direct parent ↔ direct continuable child | 兄弟成员之间没有传输通道 |
+| 6 | 本地 Activation 在结算时释放 AgentHandle | 结算后的成员没有运行时可以接收新输入 |
 
-**本插件利用的缝隙**：`startActivation` 允许调用方自带 `childId`，而这个 id 会原样出现在 `prepareContinuable(request.sessionId)` 里。于是「childId → 用哪一代历史」这张表由插件自己持有——这就是缺的透传通道。
+**本插件利用的缝隙**：`startActivation` 允许调用方自带 `childId`，而这个 id 会原样出现在 `prepareContinuable(request.sessionId)` 里。于是「childId → 用哪一代历史」这张表由插件自己持有——这就是缺口 2 缺的透传通道。
 
 ## 2. 设计
 
@@ -45,22 +45,11 @@ orchestrator plugin
 1. **childId 当钥匙**：并发安全、重启可解析；不用可变槽位，也不用工厂造一堆 provider。
 2. **显式 predecessor**：不用"计数器取下一个"，并发/重试不会分叉；启动即被拒的代数会被跳过而不是被误认。
 3. **准备结果持久化**：`prepare` 记录写明 `seeded:true/false` 与原因；没有这条，空白子会话与成功子会话事后无法区分。
-4. **一次一代**：每代新建子会话继承上一代 transcript；上一代在结算时由上游释放运行时（`local Activation … until settlement`），历史留在会话日志里——这就是"杀掉 + 转世"。
+4. **一次一代**：每代新建子会话继承上一代 transcript；上一代的运行时在结算时由 DSH 释放，历史留在会话日志里。
 
-## 3. 与「真续跑」的差异
+## 3. 安装与配置
 
-| | 转世（本插件） | 真续跑（`sendMessage` / 策略版 `continueActivation`） |
-|---|---|---|
-| 记忆连续 | ✅ 逐字复制上一代已完成轮次 | ✅ 同一会话 |
-| 结果可断言 | ✅ 每代一个 `result` | ⚠️ sendMessage 只有 messageId |
-| 会话身份 | ❌ N 个兄弟会话 | ✅ 一个成员多轮 |
-| 加 persona/toolFilter | ⚠️ 改写请求头 → 前缀缓存失效 | ✅ 头不变 |
-| 每代成本 | 复制整段历史（缓存友好但占窗口） | 只付自己那段 |
-| 成员互发消息 | ✅ 邮箱服务器（第 7 节） | ❌ 只有父 ↔ 子 |
-
-## 4. 安装与配置
-
-### 作为插件（desktop / web / headless 均可）
+### 作为插件
 
 ```yaml
 - insert:
@@ -69,7 +58,7 @@ orchestrator plugin
       config:
         directory: C:/Users/aivm/.dsh/agent-team/lineage
         providerName: agent-team
-        maxGenerations: 8          # 每个成员的代数硬上限
+        maxGenerations: 8          # 每个成员的代数上限
         maxDepth: 1                # 子 agent 不再委派
         delivery: caller           # caller=只返结果；parent=额外通知父
         registerTools: true
@@ -96,7 +85,7 @@ await g1.result
 const g2 = await team.rotate({ parent: agent, memberId: 'audit', prompt: '复核你自己上一轮的发现' })
 ```
 
-## 5. 工具
+## 4. 工具
 
 挂载后 `ctx.get('seededFork')` 拿到 API，并注册七个模型可见工具：
 
@@ -106,32 +95,32 @@ const g2 = await team.rotate({ parent: agent, memberId: 'audit', prompt: '复核
 | `seeded_rotate` | 起该成员下一代，继承最新**已完成**的一代（未落定会等；跨进程明确报错） |
 | `seeded_chain` | 列出世代、相位、前任 |
 | `member_roster` | 列出本编排已登记的成员（含 `orchestrator` 地址） |
-| `member_post` | 给某成员或 `orchestrator` 投信；目标还不存在时**返回 warning 但不丢消息**；目标已终止时**自动转世** |
+| `member_post` | 给某成员或 `orchestrator` 投信；目标还不存在时返回 warning 但不丢消息；目标已终止时自动转世 |
 | `member_inbox` | 读写给**自己地址**的邮件（默认读完即消费） |
 | `seeded_preset_diagnose` | 报告 preset 注册结果、错误、`standard` 是否可用 |
 
-## 6. 策略层：三层约束
+## 5. preset 与提示层
 
-只加系统提示不够。实测：手册在 system prompt、四个工具都在请求头（45 个工具），模型仍然自己读文件回答，一次都没派成员。所以 preset 用三层：
+只加系统提示不够：实测手册在 system prompt、工具也都在请求头，模型仍可能自己读文件回答。所以 preset 用三层：
 
 | 层 | 位置 | 作用 |
 |---|---|---|
-| persona 覆盖 | preset 的 `persona` 行 | "coding agent" → "strategy orchestrator: plan in stages, delegate before answering" |
+| persona 覆盖 | preset 的 `persona` 行 | 把 persona 换成"分阶段计划、先派成员再回答"的角色 |
 | 系统提示 | `agent-team:strategy` section（order 2810） | 完整打法与五条约束 |
 | 首轮提示 | `preset-session.js`：`agent/pre-step` 在 turn 1 step 1 注入 snapshot 用户消息 | 把「先出计划、第一波工具调用必须是 seeded_fork、用 rotate 复核」放在用户消息旁边 |
 
-preset 注册参照兄弟项目 `dsh-starter`：**等 `standard` 出现 → 克隆它的插件行 → 追加两行（手册 + 首轮提示）→ 异步注册，失败只进诊断**。
+preset 的注册方式：**等 `standard` 出现 → 克隆它的插件行 → 追加两行（手册 + 首轮提示）→ 异步注册，失败只进诊断**。
 
-不要只塞孤立条目：那样得到的 agent 缺 persona/工具，而且 `agentPresets.register()` 先写定义后激活、激活失败不回滚，会在预设列表留下坏行——本项目踩过，表现为新建会话报 `unknown preset standard`。
+不要只塞一个孤立条目：`agentPresets.register()` 先写定义后激活，激活失败不回滚，会在预设列表留下坏行，表现为新建会话失败。
 
-## 7. 邮箱服务器（mail server）
+## 6. 邮箱服务器（mail server）
 
 兄弟之间没有传输通道，所以走**邮箱服务器**：每个编排会话一个 `<sessionId>.mail.json`（与账本同目录，原子写 + EPERM 重试），每个参与者各有一个信箱。
 
 - **点对点**：过滤只按收件人比对（`toMember === reader.memberId`）。a 发给 b 的邮件，c 查信箱时看不到；c 的查询也不会消费 b 的邮件（消费按 reader 的 `childId` 记账）。
-- **跨代携带**：只写 `to_member` 时，任一代都能读到，直到被某次读取消费——"给上一世没读的邮件，仍会送到这一代"。写 `to_generation: N` 则只有第 N 代可见。
-- **编排者也是信箱**：保留地址 `orchestrator`，成员可以给它投信；它**没有总览权**（全量读取的方法已删除），只能读到写给自己的邮件。
-- **非成员子会话**（例如用原生 `subagent` 工具起的）查信箱返回空，不会退化成"读全站"。
+- **跨代携带**：只写 `to_member` 时，任一代都能读到，直到被某次读取消费。写 `to_generation: N` 则只有第 N 代可见。
+- **编排者也是信箱**：保留地址 `orchestrator`，成员可以给它投信；它没有总览权（全量读取的方法不存在），只能读到写给自己的邮件。
+- **非成员子会话**（例如用 DSH 原生 `subagent` 工具起的）查信箱返回空。
 - **每步轮询**靠 `fork`/`rotate` 拼在任务前的 preamble：
 
 ```
@@ -139,7 +128,7 @@ preset 注册参照兄弟项目 `dsh-starter`：**等 `standard` 出现 → 克�
 Before each step, call member_inbox ... To reach another member, call member_roster for exact ids, then member_post.
 ```
 
-子 agent 的轮次里没有我们可挂钩的插件事件，所以这是能做到的最强约束（提示 + 工具描述 + playbook）。
+子 agent 的轮次里没有可挂钩的插件事件，所以这是能做到的最强约束（提示 + 工具描述 + playbook）。
 
 真机验证（headless）：
 
@@ -149,9 +138,9 @@ Before each step, call member_inbox ... To reach another member, call member_ros
 编排者第一次读：1 条（来自 audit）｜producer 读：无消息｜编排者第二次读：0 条（已消费）
 ```
 
-## 8. 自动唤醒（邮件触发转世）
+## 7. 自动唤醒（邮件触发转世）
 
-场景：A 已向父汇报并进入终止状态，随后 B 给 A 投信。A 的运行时已被释放，没人读这封信——**插件在 `member_post` 里自动给 A 转世**。
+场景：A 已向父汇报并结算，随后 B 给 A 投信。A 的运行时已被 DSH 释放，没人读这封信——**插件在 `member_post` 里自动给 A 开下一代**。
 
 ```
 member_post({to_member:'audit'}) → 落盘 → 检查 audit 最新一代相位
@@ -168,7 +157,7 @@ member_post({to_member:'audit'}) → 落盘 → 检查 audit 最新一代相位
 1. **只对终止态唤醒**：运行中的成员本轮自己读信，不再造一代。
 2. **每人唤醒预算**（`autoWake.maxPerMember`，默认 2）：防 A↔B 无限互唤醒。
 3. **同一成员同时只允许一个唤醒在飞**（`already-waking`）。
-4. **唤醒任务显式覆盖继承来的"已结束"指令**：实测第一版会让成员沿用旧任务（"只回答数字 1"）而无视新邮件，所以文本写明"这封信比你上一轮更新，即使上一轮让你停止或改答别的"。
+4. **唤醒任务显式覆盖继承来的"已结束"指令**：实测第一版会让成员沿用旧任务而无视新邮件，所以文本写明"这封信比你上一轮更新，即使上一轮让你停止或改答别的"。
 5. **结果如实回报**：`started the next generation (…)` / `member is still running` / `no automatic wake: …`。
 
 真机验证（headless）：
@@ -181,10 +170,10 @@ audit   gen1  reserve → prepare → start → auto-wake → settle
 gen1 会话：isSeeded=true，工具调用 member_inbox, send_message
 ```
 
-## 9. 文件结构
+## 8. 文件结构
 
 ```
-src/seed.js           buildForkSeed / openTurnClosers / ToolCallRecovery（对齐上游 fork.ts + repair.ts）
+src/seed.js           buildForkSeed / openTurnClosers / ToolCallRecovery
 src/journal.js        血缘账本：reserve/prepare/start/settle/fail/auto-wake/head/chain/sourceOf
 src/provider.js       SeededForkProvider（prepareContinuable + readSessionEvents + 留痕）
 src/mailserver.js     邮箱服务器：持久化邮件、点对点寻址、按 reader 消费
@@ -195,11 +184,11 @@ src/preset-entry.js   preset 作用域里的手册 section
 src/preset-session.js preset 作用域里的首轮提示
 src/index.js          cordis 函数插件入口（name/inject/apply，无 default export）
 scripts/              verify-module.mjs 契约自检 / demo.mjs 假 host 演示 / inspect-session.mjs 解码会话
-profile/             独立 profile 挂载配方（已实测）
+profile/              独立 profile 挂载配方（已实测）
 tests/                64 项 node:test
 ```
 
-## 10. 验证
+## 9. 验证
 
 ```sh
 cd .experiments/agent-team
@@ -210,50 +199,49 @@ node scripts/demo.mjs            # 假 host 的 fork → rotate → rotate 演�
 
 覆盖：种子构造（含未返回 tool call 的合成闭合器）、账本相位与重启恢复、并发预留、代数上限、provider 降级路径、rotate 护栏（等落定 / 跨进程拒绝）、工具 schema 与注册开关、preset 克隆与 `standard` 缺失容错、首轮提示只注入一次、邮箱的寻址/消费/跨代携带/持久化/未知目标 warning/非成员隔离/终止态唤醒/唤醒预算。
 
-真实 DSH 客户端（桌面版自带 CLI，`dsh --version` = 0.2.2-rc.1；独立 profile 由 `headless`/`web` 模板克隆）：
+真实 DSH 客户端（桌面版自带 CLI，`dsh --version` = 0.2.2-rc.1；独立 profile 由 `headless` / `web` 模板克隆）：
 
 | 场景 | 证据 |
 |---|---|
-| 转世继承 | 账本 `prepare seeded:true, boundary=32, inheritedEvents=33`；子会话 `inherited 34 events, marker at seq 34`，正文是上一代回答 |
+| 代际继承 | 账本 `prepare seeded:true, boundary=32, inheritedEvents=33`；子会话 `inherited 34 events, marker at seq 34`，正文是上一代回答 |
 | 前缀缓存 | 第二代首个自有请求 `inputTokens=195, cacheReadTokens=15360` |
 | 池不泄漏 | `maxActiveSubagents` 覆盖成 2，连跑 5 代全成功，无 `ACTIVATION_LIMIT_REACHED` |
-| 成员投信 | `member_post → seeded_fork`；成员读到邮件并按内容作答（"42"） |
+| 成员投信 | `member_post → seeded_fork`；成员读到邮件并按内容作答 |
 | 编排者信箱 | 成员给 `orchestrator` 投信，编排者只读到写给自己的 1 条；其他成员读不到 |
-| 自动唤醒 | audit gen0 终止 → producer 投信 → audit gen1 以 `auto-wake` 记录被创建并读取 |
+| 自动唤醒 | audit gen0 结算 → producer 投信 → audit gen1 以 `auto-wake` 记录被创建并读取 |
 | preset 注册 | `agent-team: presets registered=[strategy-mirror] errors=[]` |
 | 手册落 prompt | 会话解码：`systemMessages=1`，含 `## Author strategy (agent-team)` |
 
-## 11. 真机跑出来、单测跑不出来的缺陷（均已修复）
+## 10. 真机跑出来、单测跑不出来的缺陷（均已修复）
 
 1. `ctx.tools` / `ctx.sessions` 未 `inject` 直接读 → cordis 抛错。改为只用 `ctx.get(name)`。
 2. `ctx.seededFork = api` 被 cordis 拒绝。改为 `ctx.provide('seededFork', api)` + effect 释放。
 3. `assertSupportedJsonSchema` 不接受 `type: ['string','null']`，也不接受过宽对象项。改为单一类型。
-4. 代码注册 preset 会污染预设列表（`unknown preset standard`，新建会话失败）。改为克隆 `standard` 的异步 best-effort 注册。
+4. 代码注册 preset 会污染预设列表，导致新建会话失败。改为克隆 `standard` 的异步 best-effort 注册。
 5. 模型在子任务落定前调用 `rotate` → 种子为空、静默投胎成空白。现在 `rotate` 等同进程内前一代落定，跨进程明确报错。
 6. 仅有系统提示时模型不派成员。补 persona 覆盖 + 首轮 snapshot 提示。
 
-## 12. 还没验证 / 风险
+## 11. 还没验证 / 风险
 
 **还没验证**
 
 1. 血缘进会话日志那一层：`appendPluginRecord` 是 `@deepseek-ai/dsh-session` 的模块级导出，外部插件 import 不到宿主副本，`appendRecordFor` 目前没人注入；文件镜像才是唯一 durable 存储。
-2. 跨进程冷缘：`rotate` 只等本进程内运行中的前一代；重启后遇到 `started` 相位会报错。
+2. 跨进程：`rotate` 只等本进程内运行中的前一代；重启后遇到 `started` 相位会报错。
 3. persona/toolFilter 下的缓存收益：只验证了不加的情形。
-4. `buildForkSeed` 与上游实现未做同一输入的逐字节比对（行为一致）。
-5. 成员"每步查信箱"依赖模型遵守提示，没有强制钩子。
+4. 成员"每步查信箱"依赖模型遵守提示，没有强制钩子。
 
 **已知风险**
 
 1. childId 预留即消耗：`DUPLICATE_CHILD` 后不可回收，`maxGenerations` 是硬上限（默认 16）。
 2. 每代复制整段历史：会话文件与 catalog 条目随代数增长。
-3. persona/toolFilter 毁掉前缀复用（上游设计使然）。
+3. persona/toolFilter 会改写请求头，使前缀缓存失效（DSH 行为）。
 4. provider 名唯一：同一 profile 重复注册抛 `DUPLICATE_PROVIDER`。
 5. 账本与邮箱存储目录必须在仓库外。
-6. `snapshotEvents()` 已被上游标记 deprecated，未来改用持久化/查询路径。
+6. `snapshotEvents()` 已被 DSH 标记 deprecated，未来改用持久化/查询路径。
 7. `inspect-session.mjs` 的 zstd 切帧是启发式（压缩负载出现魔数会切错），只用于巡检。
 8. 唤醒与转世都要求**编排者 agent 在线**；编排会话结束后投信仍会落盘，但要等下次编排者起来才被读取。
 
-## 13. 可以接着做的
+## 12. 可以接着做的
 
 1. 把血缘接进会话日志（注入 `appendPluginRecord`）。
 2. 量 persona 对缓存的影响（对照实验）。
@@ -262,7 +250,7 @@ node scripts/demo.mjs            # 假 host 的 fork → rotate → rotate 演�
 5. 给成员"硬看板"：把 `member_inbox` 结果作为每步 runtime context 注入（需要内核钩子，目前做不到）。
 6. 广播语义：`member_post({ broadcast: true })`，仍按 reader 各自记账，不引入"读全站"。
 
-## 14. 复现清单
+## 13. 复现清单
 
 ```sh
 cd .experiments/agent-team && node --test tests/*.test.js && node scripts/verify-module.mjs
@@ -275,9 +263,3 @@ node scripts/inspect-session.mjs ~/.dsh/sessions/*/<child-id>/session.v4.jsonl.z
 ```
 
 CLI 不能 dump `desktop` profile（`managed exclusively by the Electron application`），所以每次改 patch 都先在一个一次性 profile 里用**同样字节**的 patch 验证组合与真机加载，再写进 desktop。
-
-## 15. 命名与迁移
-
-- 本项目正式命名 **`@commonworks/agent-team`**（包名、模块文档、目录、插件名、默认 `providerName`、preset 显示名、手册 section 名全部统一）。
-- 旧的 `seeded-fork` / `postbox` / 公告板命名已全部退役，**不留兼容层**：`~/.dsh/seeded-fork/lineage/` 下的旧账本与旧 `.postbox.json` 不会被读取。要清可直接删除。
-- 工具名 `seeded_fork` / `seeded_rotate` 保留：它们描述"seeded fork"这个机制，不是项目名。
