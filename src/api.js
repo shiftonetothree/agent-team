@@ -626,6 +626,25 @@ export function createSeededFork(ctx, config = {}) {
       }
 
   /**
+   * Classify a member's newest generation for delivery.
+   *
+   * Mail and members are addressed by member id; only the plugin cares which
+   * incarnation is current. Every delivery path asks this one question, so they
+   * cannot disagree about whether a member is busy, booting, or finished.
+   *
+   * @param {string} memberId - member identity.
+   * @param {any} journal - the orchestration journal.
+   * @returns {Promise<{ state: 'none' | 'reserved' | 'running' | 'terminal', head?: any }>}
+   */
+  async function memberDeliveryState(memberId, journal) {
+    const head = await journal.head(memberId)
+    if (head === undefined) return { state: 'none' }
+    if (head.phase === 'reserved') return { state: 'reserved', head }
+    if (head.phase === 'started') return { state: 'running', head }
+    return { state: 'terminal', head }
+  }
+
+  /**
    * Reincarnate a member whose newest generation already terminated, because a
    * message just landed in its inbox.
    *
@@ -669,10 +688,10 @@ export function createSeededFork(ctx, config = {}) {
     if (!claimMember(memberId)) return { woken: false, reason: 'already-waking' }
     try {
       const journal = registry.journalForSession(sessionId)
-      const head = await journal.head(memberId)
-      if (head === undefined) return { woken: false, reason: 'no-generation' }
-      if (head.phase === 'started') return { woken: false, reason: 'running' }
-      if (head.phase === 'reserved') return { woken: false, reason: 'not-started' }
+      const { state } = await memberDeliveryState(memberId, journal)
+      if (state === 'none') return { woken: false, reason: 'no-generation' }
+      if (state === 'running') return { woken: false, reason: 'running' }
+      if (state === 'reserved') return { woken: false, reason: 'not-started' }
       const used = await journal.autoWakeCount(memberId)
       if (used >= autoWake.maxPerMember) return { woken: false, reason: 'budget-exhausted' }
       const agents = ctx?.get?.('agents')
@@ -740,6 +759,7 @@ export function createSeededFork(ctx, config = {}) {
     resolveCaller,
     wakeIfTerminal,
     orchestratorId: ORCHESTRATOR_MEMBER_ID,
+    memberDeliveryState,
     claimMember,
     releaseMember,
     memberRoster,
@@ -1025,12 +1045,12 @@ export function buildToolDefinitions(getApi) {
         const skipped = []
         const stuck = []
         for (const [memberId, messages] of byMember) {
-          const head = await journal.head(memberId)
-          if (head !== undefined && head.phase === 'started') {
+          const { state } = await api.memberDeliveryState(memberId, journal)
+          if (state === 'running') {
             skipped.push({ member_id: memberId, reason: 'already running; it reads its own inbox' })
             continue
           }
-          if (head !== undefined && head.phase === 'reserved') {
+          if (state === 'reserved') {
             skipped.push({ member_id: memberId, reason: 'a generation is being prepared' })
             continue
           }
