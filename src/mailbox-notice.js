@@ -17,12 +17,20 @@ export const NOTICE_KIND = 'agent-team-mailbox'
 
 /**
  * Compose the notice text.
- * @param {{ total: number, yours: number, others: number }} counts - server occupancy.
+ *
+ * Only the orchestrator can dispatch mail for other members, so only it is told
+ * to; a member that was started by another member would otherwise try a call
+ * that is reserved and rejected.
+ *
+ * @param {{ total: number, yours: number, others: number, role?: string }} counts - server occupancy.
  * @returns {string}
  */
-export function noticeText({ total, yours, others }) {
+export function noticeText({ total, yours, others, role }) {
+  const next = role === 'orchestrator'
+    ? 'Call member_inbox for yours and member_dispatch for the rest; you cannot read mail addressed to others.'
+    : 'Read yours with member_inbox; mail addressed to others is not yours to read.'
   return `[${NOTICE_KIND}] The mailbox server holds ${total} message(s): ${yours} for you, ${others} addressed to others. `
-    + 'Call member_inbox for yours and member_dispatch for the rest; do not read mail addressed to others. '
+    + `${next} `
     + 'While the server is not empty, keep working instead of giving the user a conclusion.'
 }
 

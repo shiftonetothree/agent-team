@@ -427,17 +427,20 @@ export function createSeededFork(ctx, config = {}) {
   }
 
   /**
-   * Occupancy of the board the parent reads, from the parent's own mailbox.
-   * @param {any} parent - the orchestrating agent.
-   * @returns {Promise<{ total: number, yours: number, others: number }>}
+   * Occupancy of the server the given agent reads, resolved against the
+   * orchestration the journal belongs to.
+   * @param {string} sessionId - orchestrating session that owns the store.
+   * @param {string} readerId - the agent whose mailbox is read.
+   * @returns {Promise<{ total: number, yours: number, others: number, role: string }>}
    */
-  async function mailboxCountsFor(parent) {
-    const mailServer = mailServerForSession(parent.session.id)
+  async function mailboxCountsFor(sessionId, readerId) {
+    const mailServer = mailServerForSession(sessionId)
+    const role = readerId === sessionId ? ORCHESTRATOR_MEMBER_ID : 'member'
     const result = await mailServer.inbox({
-      reader: { childId: parent.session.id, memberId: ORCHESTRATOR_MEMBER_ID },
+      reader: { childId: readerId, memberId: role },
       ack: false,
     })
-    return { total: result.total, yours: result.total - result.others, others: result.others }
+    return { total: result.total, yours: result.total - result.others, others: result.others, role }
   }
 
   /**
@@ -508,7 +511,7 @@ export function createSeededFork(ctx, config = {}) {
       // so the occupancy notice rides right behind it.
       void journaled.then(async () => {
         try {
-          const counts = await mailboxCountsFor(parent)
+          const counts = await mailboxCountsFor(journal.sessionId, parent.session.id)
           appendMailboxNotice(parent, counts)
         } catch {
           // Occupancy is advisory; a failed read must not surface as a fork failure.
@@ -1153,8 +1156,9 @@ export function buildToolDefinitions(getApi) {
             },
             total: { type: 'number' },
             others: { type: 'number' },
+            role: { type: 'string' },
           },
-          required: ['messages', 'total', 'others'],
+          required: ['messages', 'total', 'others', 'role'],
           additionalProperties: false,
         },
         render: (_args, value) => {
@@ -1170,7 +1174,11 @@ export function buildToolDefinitions(getApi) {
           const occupancy = value.total === 0
             ? 'mailbox: empty'
             : `mailbox: ${value.total} in total, ${value.others} addressed to others`
-          const rule = value.total === 0 ? '' : ' — while the server is not empty, call member_dispatch for mail addressed to others instead of concluding; do not read it'
+          // Only the orchestrator can dispatch, so only it is told to. Telling a
+          // member would make it try a call that is reserved and rejected.
+          const rule = value.role !== 'orchestrator' || value.total === 0
+            ? ''
+            : ' — while the server is not empty, call member_dispatch for mail addressed to others instead of concluding; you cannot read it'
           return [{ type: 'text', text: `${body}\n\n${occupancy}${rule}` }]
         },
       },
@@ -1181,7 +1189,7 @@ export function buildToolDefinitions(getApi) {
         // Only a known mailbox reads: a member generation, or the orchestrator's
         // own address. A child this plugin never reserved gets nothing 鈥?the inbox
         // is point-to-point, never a broadcast channel.
-        if (caller.memberId === undefined) return { messages: [], total: 0, others: 0 }
+        if (caller.memberId === undefined) return { messages: [], total: 0, others: 0, role: 'member' }
         const result = await mailServer.inbox({
           reader: { childId: caller.childId, memberId: caller.memberId, generation: caller.generation },
           limit: args.limit,
@@ -1199,6 +1207,7 @@ export function buildToolDefinitions(getApi) {
           })),
           total: result.total,
           others: result.others,
+          role: caller.memberId === ORCHESTRATOR_MEMBER_ID ? 'orchestrator' : 'member',
         }
       },
     },

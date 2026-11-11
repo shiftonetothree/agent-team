@@ -629,3 +629,42 @@ test('an unreadable store is set aside instead of being overwritten empty', asyn
   const stored = JSON.parse(await readFile(fresh.filePath, 'utf8'))
   assert.equal(stored.messages.length, 1)
 })
+
+test('a member is never told to dispatch', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const a = await api.fork({ parent, memberId: 'a', prompt: 'a' })
+  const b = await api.fork({ parent, memberId: 'b', prompt: 'b' })
+  await tools.get('member_post').execute(
+    { to_member: 'b', body: 'for b only' },
+    { agent: { session: { id: a.childId } } },
+  )
+
+  const asMember = await tools.get('member_inbox').execute({}, { agent: { session: { id: a.childId } } })
+  assert.equal(asMember.role, 'member')
+  const rendered = tools.get('member_inbox').output.render({}, asMember)[0].text
+  assert.doesNotMatch(rendered, /member_dispatch/u, 'a member must not be told to dispatch')
+  assert.match(rendered, /addressed to others/u)
+
+  const asOrchestrator = await tools.get('member_inbox').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(asOrchestrator.role, 'orchestrator')
+  const orchestratorView = tools.get('member_inbox').output.render({}, asOrchestrator)[0].text
+  assert.match(orchestratorView, /member_dispatch/u, 'the orchestrator still gets the dispatch rule')
+})
+
+test('the settlement notice only tells the orchestrator to dispatch', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'the handler is unguarded' },
+    { agent: { session: { id: audit.childId } } },
+  )
+  await audit.result
+  await new Promise(resolve => setTimeout(resolve, 40))
+
+  // The orchestrator's session gets the notice and the dispatch rule; a member
+  // session would get the same notice without that rule.
+  const { buildMailboxNotice, noticeText } = await import('../src/mailbox-notice.js')
+  assert.match(noticeText({ total: 2, yours: 1, others: 1, role: 'orchestrator' }), /member_dispatch/u)
+  assert.doesNotMatch(noticeText({ total: 2, yours: 1, others: 1, role: 'member' }), /member_dispatch/u)
+  assert.match(buildMailboxNotice({ total: 2, yours: 1, others: 1, role: 'member' }).content[0].text, /member_inbox/u)
+})
