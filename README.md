@@ -170,8 +170,8 @@ Before each step, call member_inbox ... To reach another member, call member_ros
 
 | 层 | 内容 |
 |---|---|
-| 编排者的 playbook / 首轮提示 | 派任务时要**同时设计协作图**：每个 `task` 写明该成员该找哪些同伴、发什么、什么情况才升级给编排者。编排者是调度者和仲裁者，不是交换机。 |
-| 成员的 preamble（`fork`/`rotate` 自动拼接） | 直接列出同伴名单，并说明"需要事实、核对、交接就直接 `member_post` 给那个同伴，不要请编排者转述"；同时提醒"同伴还在等你时不要结束这一代，否则编排者得起新的一代" |
+| 编排者的 playbook / 首轮提示 | 派任务时必须同时填 `peers`（每个队友的 `member` / `relationship` / `when`）与 `report_when`（什么时候升级给编排者）。编排者是调度者和仲裁者，不是交换机。 |
+| 成员的 preamble（`fork`/`rotate` 自动拼接） | 把 `peers` 渲染成"队友 + 关系 + 何时直接找它"，再补上汇报规则与收信规则；`rotate` 未显式声明时继承上一代的 links |
 
 生成的 preamble 长这样：
 

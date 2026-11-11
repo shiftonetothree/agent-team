@@ -42,7 +42,11 @@ Mail is a second input channel, not a side channel. It reaches you two ways: you
 
 Members cannot address each other directly, so a cross-member hand-off goes through the mail server or through the parent's next \`task\`. Prefer the mail server while two members are working at the same time; prefer \`seeded_rotate\` when the second member needs the first one's own history.
 
-Design the collaboration graph, not just the task list. Members can message each other directly, so a task that only says "report back" spends a generation on routing. In each \`task\`, name the peers that member should talk to, what it should send them and when, and what it should decide on its own. A useful default: the member that produced a finding messages the member that must verify or build on it, and only escalates to you for scope or conflicting evidence. Prefer peer-to-peer traffic over relaying through you; you are the scheduler and the arbiter, not the switchboard.
+Design the collaboration graph, not just the task list. Members can message each other directly, so a task that only says "report back" spends a generation on routing. Every dispatch therefore fills \`peers\` (and optionally \`report_when\`) next to \`task\`:
+- \`peers\`: one entry per teammate, each with \`member\`, \`relationship\` (what that teammate gives or needs, from this member's point of view) and \`when\` (the moment this member should message it directly).
+- \`report_when\`: what has to happen for this member to stop coordinating peer-to-peer and report to you.
+
+A useful default shape: the member that produced a finding sends it to the member that must verify or build on it as soon as it is confirmed; the verifier messages the producer when the evidence conflicts; both escalate to you only for scope, sequencing, or conflicting evidence. Prefer peer-to-peer traffic over relaying through you; you are the scheduler and the arbiter, not the switchboard.
 
 Rules that keep the pipeline honest:
 1. Verification members are read-only. Say so in their \`task\`, and never ask them to modify files.

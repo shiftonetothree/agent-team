@@ -82,6 +82,8 @@ function foldRecords(records) {
       entry.generation = record.generation ?? entry.generation
       entry.seedFrom = record.seedFrom
       entry.phase = 'reserved'
+      if (record.peers !== undefined) entry.peers = record.peers
+      if (record.reportWhen !== undefined) entry.reportWhen = record.reportWhen
       if (record.memberId !== undefined) {
         const chain = chains.get(record.memberId) ?? []
         if (!chain.includes(record.childId)) chain.push(record.childId)
@@ -271,9 +273,11 @@ export class LineageJournal {
    * @param {string} request.memberId - stable member identity inside the orchestration.
    * @param {string} [request.seedFrom] - predecessor child session id, if any.
    * @param {string} [request.childId] - pre-allocated id (defaults to a fresh uuid).
+   * @param {any[]} [request.peers] - collaboration links declared for this generation.
+   * @param {string} [request.reportWhen] - escalation rule declared for this generation.
    * @returns {Promise<{ childId: string, generation: number, seedFrom?: string }>}
    */
-  async reserve({ memberId, seedFrom, childId }) {
+  async reserve({ memberId, seedFrom, childId, peers, reportWhen }) {
     if (typeof memberId !== 'string' || memberId.length === 0) throw new Error('reserve requires memberId')
     return this.#serial(async () => {
     await this.#load()
@@ -284,7 +288,11 @@ export class LineageJournal {
       throw new Error(`member "${memberId}" reached the reincarnation cap (${this.maxGenerations}); archive the oldest generation instead of rotating further`)
     }
     const resolved = childId ?? randomUUID()
-    await this.#commit({ kind: 'reserve', childId: resolved, memberId, generation, seedFrom, at: Date.now() })
+    await this.#commit({
+      kind: 'reserve', childId: resolved, memberId, generation, seedFrom, at: Date.now(),
+      ...(peers === undefined ? {} : { peers }),
+      ...(reportWhen === undefined ? {} : { reportWhen }),
+    })
     return seedFrom === undefined
       ? { childId: resolved, generation }
       : { childId: resolved, generation, seedFrom }

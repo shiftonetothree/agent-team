@@ -435,11 +435,42 @@ test('the member preamble names the peers it may talk to', async () => {
   await api.fork({ parent, memberId: 'review', prompt: 'review' })
 
   const latest = starts.at(-1).spec.request.prompt[0].text
-  const peersLine = latest.split('\n').find(line => line.startsWith('Your peers are'))
-  assert.ok(peersLine !== undefined, 'the preamble names peers')
-  assert.match(peersLine, /"audit"/u)
-  assert.match(peersLine, /"produce"/u)
-  assert.doesNotMatch(peersLine, /"review"/u, 'a member is not its own peer')
-  assert.match(latest, /member_post/u)
-  assert.match(latest, /not for passing notes between members/u)
+  assert.match(latest, /Teammates in this orchestration:/u)
+  assert.match(latest, /"audit"/u)
+  assert.match(latest, /"produce"/u)
+  const blocks = latest.split('Talk to a teammate directly')
+  assert.doesNotMatch(blocks[0], /^- "review"/mu, 'a member is not its own teammate')
+  assert.match(latest, /report to "orchestrator"/u)
+})
+
+test('declared peer links reach the member, and a rotation keeps them', async () => {
+  const { parent, api, starts } = await wakeSetup({ autoWake: false })
+  const peers = [
+    { member: 'ground', relationship: 'owns the code facts you audit', when: 'as soon as a fact you need is missing' },
+    { member: 'produce', relationship: 'applies your fixes', when: 'once a defect is confirmed' },
+  ]
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit', peers, reportWhen: 'report on scope conflicts only' })
+
+  const declared = starts.at(-1).spec.request.prompt[0].text
+  assert.match(declared, /"ground" — owns the code facts you audit/u)
+  assert.match(declared, /as soon as a fact you need is missing/u)
+  assert.match(declared, /"produce" — applies your fixes/u)
+  assert.match(declared, /report on scope conflicts only/u)
+
+  await audit.result
+  await new Promise(resolve => setTimeout(resolve, 20))
+  await api.rotate({ parent, memberId: 'audit', prompt: 'go deeper' })
+
+  const inherited = starts.at(-1).spec.request.prompt[0].text
+  assert.match(inherited, /- "ground" — owns the code facts you audit\./u, 'rotation inherits the declared links')
+  assert.match(inherited, /report on scope conflicts only/u)
+})
+
+test('the journal carries the declared links', async () => {
+  const { parent, api } = await wakeSetup({ autoWake: false })
+  const peers = [{ member: 'ground', relationship: 'owns the facts', when: 'when a fact is missing' }]
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit', peers, reportWhen: 'on scope only' })
+  const entry = await api.journalForSession('parent-wake').entryOf(audit.childId)
+  assert.deepEqual(entry.peers, peers)
+  assert.equal(entry.reportWhen, 'on scope only')
 })
