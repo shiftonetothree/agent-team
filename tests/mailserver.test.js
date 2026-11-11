@@ -27,10 +27,7 @@ test('a posted message is visible to the addressed member and consumed once', as
   assert.equal(first.messages[0].from.memberId, 'audit')
 
   const again = await box.inbox({ reader: { childId: 'c-b1', memberId: 'produce', generation: 0 } })
-  assert.equal(again.messages.length, 0, 'acknowledged messages do not repeat for the same reader')
-
-  const withRead = await box.inbox({ reader: { childId: 'c-b1', memberId: 'produce', generation: 0 }, includeRead: true })
-  assert.equal(withRead.messages.length, 1)
+  assert.equal(again.messages.length, 0, 'a delivered message is gone from the mailbox')
 })
 
 test('an unread note to the previous generation reaches the next generation', async () => {
@@ -346,8 +343,9 @@ test('mailbox counts include mail addressed to others, without exposing it', asy
 
   const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: 'parent-wake' } } })
   assert.equal(inbox.messages.length, 1, 'the orchestrator reads only its own mail')
-  assert.equal(inbox.total, 2, 'the server total counts every message')
-  assert.equal(inbox.others, 1, 'one message belongs to another mailbox')
+  assert.equal(inbox.unread, 1, 'the delivered message is gone; only the other member mail remains')
+  assert.equal(inbox.unread_yours, 0, 'its own message was consumed by this read')
+  assert.equal(inbox.unread_others, 1, 'the other member still has unread mail')
 })
 
 test('member_dispatch starts a generation from the mail and leases it', async () => {
@@ -594,7 +592,7 @@ test('a generation that read its mail is not retried', async () => {
   assert.equal((await api.chain('audit')).length, 1, 'read mail needs no new generation')
 })
 
-test('the mailbox survives an incarnation: the next generation still sees the mail', async () => {
+test('a delivered message does not reappear in the next incarnation', async () => {
   const { parent, api, tools } = await wakeSetup({ autoWake: false })
   const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
   await tools.get('member_post').execute(
@@ -606,12 +604,11 @@ test('the mailbox survives an incarnation: the next generation still sees the ma
   await audit.result
   await new Promise(resolve => setTimeout(resolve, 30))
 
-  // Generation 1 inherits the member's mailbox, including what generation 0 handled.
+  // Reading delivers: the message is gone, so the next incarnation starts clean.
   const next = await api.rotate({ parent, memberId: 'audit', prompt: 'continue' })
   const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: next.childId } } })
-  assert.equal(inbox.messages.length, 1, 'the message is still in the member mailbox')
-  assert.equal(inbox.messages[0].state, 'handled-earlier')
-  assert.equal(inbox.total, 1)
+  assert.equal(inbox.messages.length, 0, 'a delivered message does not reappear')
+  assert.equal(inbox.unread, 0)
 })
 
 test('an unreadable store is set aside instead of being overwritten empty', async () => {
@@ -667,4 +664,25 @@ test('the settlement notice only tells the orchestrator to dispatch', async () =
   assert.match(noticeText({ total: 2, yours: 1, others: 1, role: 'orchestrator' }), /member_dispatch/u)
   assert.doesNotMatch(noticeText({ total: 2, yours: 1, others: 1, role: 'member' }), /member_dispatch/u)
   assert.match(buildMailboxNotice({ total: 2, yours: 1, others: 1, role: 'member' }).content[0].text, /member_inbox/u)
+})
+
+test('reading removes the message from the mailbox', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'handled now' },
+    { agent: { session: { id: audit.childId } } },
+  )
+
+  const before = await tools.get('member_inbox').execute({ ack: false }, { agent: { session: { id: audit.childId } } })
+  assert.equal(before.unread, 1)
+  const rendered = tools.get('member_inbox').output.render({}, before)[0].text
+  assert.match(rendered, /1 unread \(1 yours, 0 addressed to others\)/u)
+
+  const read = await tools.get('member_inbox').execute({}, { agent: { session: { id: audit.childId } } })
+  assert.equal(read.messages.length, 1, 'the read returned it')
+  assert.equal(read.unread, 0, 'and the mailbox is empty afterwards')
+  const after = tools.get('member_inbox').output.render({}, read)[0].text
+  assert.match(after, /mailbox: empty/u)
+  assert.doesNotMatch(after, /member_dispatch/u)
 })

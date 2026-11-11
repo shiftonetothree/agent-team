@@ -181,7 +181,6 @@ export class MailServer {
         toMember,
         ...(topic === undefined ? {} : { topic }),
         body,
-        readers: [],
       }
       this.#messages.push(message)
       if (this.#messages.length > MAIL_LIMIT) this.#messages.splice(0, this.#messages.length - MAIL_LIMIT)
@@ -191,52 +190,43 @@ export class MailServer {
   }
 
   /**
-   * Messages visible to one reader. Point-to-point: a reader only ever sees mail
-   * addressed to its own identity.
+   * Deliver messages to one reader and remove what it read.
+   *
+   * A mailbox holds only undelivered mail: reading is delivery, so the messages
+   * are deleted from the store instead of being marked read. Point-to-point
+   * delivery means each message belongs to exactly one mailbox, so deleting it
+   * on read cannot take mail away from anyone else.
    *
    * @param {object} request
    * @param {{ childId: string, memberId?: string, generation?: number }} request.reader - reader identity.
    * @param {number} [request.limit] - maximum messages returned, newest last.
-   * @param {boolean} [request.ack] - mark the returned messages consumed by this reader.
-   * @param {boolean} [request.includeRead] - include messages this reader already acknowledged.
-   * @returns {Promise<{ messages: any[], unacked: number }>}
+   * @param {boolean} [request.ack] - deliver (delete) the returned messages. Defaults to true.
+   * @returns {Promise<{ messages: any[], unread: number, unreadYours: number, unreadOthers: number, stored: number }>}
    */
-  async inbox({ reader, limit = 20, ack = true, includeRead = false }) {
+  async inbox({ reader, limit = 20, ack = true }) {
     return this.#serial(async () => {
       await this.#load()
       const addressedToReader = message => reader.memberId !== undefined && message.toMember === reader.memberId
       const visible = this.#messages.filter(message => {
-        if (reader.memberId !== undefined && message.toMember !== reader.memberId) return false
-        if (reader.memberId === undefined && message.toMember !== undefined) return false
-        return includeRead || !message.readers.includes(reader.childId)
+        if (reader.memberId === undefined) return message.toMember === undefined
+        return message.toMember === reader.memberId
       })
       const selected = visible.slice(-limit)
-      if (ack) {
-        let changed = false
-        for (const message of selected) {
-          if (!message.readers.includes(reader.childId)) {
-            message.readers.push(reader.childId)
-            changed = true
-          }
-        }
-        if (changed) await this.#persist()
+      if (ack && selected.length > 0) {
+        const delivered = new Set(selected.map(message => message.id))
+        this.#messages = this.#messages.filter(message => !delivered.has(message.id))
+        await this.#persist()
       }
-      const yours = this.#messages.filter(addressedToReader).length
+      const unreadOthers = this.#messages.length - this.#messages.filter(addressedToReader).length
       return {
-        messages: selected.map(message => ({
-          ...message,
-          readers: [...message.readers],
-          handled: message.readers.length > 0,
-        })),
-        unacked: visible.filter(message => !message.readers.includes(reader.childId)).length,
-        // Board occupancy, not content: a reader may know that the server still
-        // holds mail without learning who wrote to whom.
-        total: this.#messages.length,
-        others: this.#messages.length - yours,
+        messages: selected,
+        unread: this.#messages.length,
+        unreadYours: this.#messages.filter(addressedToReader).length,
+        unreadOthers,
+        stored: this.#messages.length,
       }
     })
   }
-
   /**
    * Unread mail addressed to a member, with its dispatch lease.
    *
@@ -251,9 +241,9 @@ export class MailServer {
   async pending({ limit = 50, excluding } = {}) {
     await this.#load()
     return this.#messages
-      .filter(message => message.readers.length === 0 && message.toMember !== excluding)
+      .filter(message => message.toMember !== excluding)
       .slice(0, limit)
-      .map(message => ({ ...message, readers: [...message.readers] }))
+      .map(message => ({ ...message }))
   }
 
   /**
@@ -275,25 +265,6 @@ export class MailServer {
       }
       if (changed > 0) await this.#persist()
       return changed
-    })
-  }
-
-  /**
-   * Drop a reader mark so a message becomes unread again (self-service undo).
-   * @param {string} id - message id.
-   * @param {string} childId - reader to unmark.
-   * @returns {Promise<boolean>} whether the message changed.
-   */
-  async unread(id, childId) {
-    return this.#serial(async () => {
-      await this.#load()
-      const message = this.#messages.find(candidate => candidate.id === id)
-      if (message === undefined) return false
-      const index = message.readers.indexOf(childId)
-      if (index === -1) return false
-      message.readers.splice(index, 1)
-      await this.#persist()
-      return true
     })
   }
 }

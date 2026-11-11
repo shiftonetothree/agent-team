@@ -34,7 +34,7 @@ Dispatch with the strategy tools:
 - For verification and repair, call \`member_start\` again on the member that produced the work: the auditor must inherit what it is auditing, not be told about it.
 - \`member_roster\` lists the members this orchestration already started, with the exact ids to address.
 - \`member_post\` leaves a message for another member; the recipient reads it with \`member_inbox\`.
-- \`member_inbox\` reads the messages left for you and reports how many messages the server holds in total, including mail addressed to others. Check it before each step: a message left for you earlier is still there until it is read.
+- \`member_inbox\` reads the messages left for you and reports how much mail the server still holds, including mail addressed to others. Check it before each step: reading delivers a message, so each one is yours to act on exactly once.
 - \`member_dispatch\` starts the members the mailbox asks for: it groups unread mail by addressee and starts that member again with the mail as its task.
 
 Mail is a second input channel, not a side channel. It reaches you two ways: your own \`member_inbox\` result, and the notice appended to this session when a member settles. Both report the server total. While that total is above zero, do not give the user a conclusion: call \`member_inbox\` for your own mail and \`member_dispatch\` for the mail addressed to members, then keep working. Never read mail addressed to another member; knowing that it exists is enough.

@@ -212,7 +212,7 @@ export function withMemberPreamble(blocks, identity) {
     + `${peerLines.join('\n')}`
     + `Talk to a teammate directly when it owns the fact or the step you need; ${reportWhen}.\n`
     + 'Before each step, call member_inbox to read messages that other members left for you; mail stays in your '
-    + 'mailbox until it is read. '
+    + 'mailbox until you read it; reading delivers it, so it leaves the mailbox. '
     + 'If a peer is waiting on you, answer it before you finish: ending your turn while a peer still needs you '
     + 'forces the orchestrator to start you again.\n'
   const rest = Array.isArray(blocks) ? blocks : []
@@ -440,7 +440,12 @@ export function createSeededFork(ctx, config = {}) {
       reader: { childId: readerId, memberId: role },
       ack: false,
     })
-    return { total: result.total, yours: result.total - result.others, others: result.others, role }
+    return {
+      total: result.unread,
+      yours: result.unreadYours,
+      others: result.unreadOthers,
+      role,
+    }
   }
 
   /**
@@ -898,7 +903,6 @@ export function buildToolDefinitions(getApi) {
                 type: 'object',
                 properties: {
                   member_id: { type: 'string' },
-                  state: { type: 'string' },
                 },
                 required: ['member_id', 'state'],
                 additionalProperties: false,
@@ -942,7 +946,6 @@ export function buildToolDefinitions(getApi) {
                 type: 'object',
                 properties: {
                   member_id: { type: 'string' },
-                  state: { type: 'string' },
                   messages: { type: 'number' },
                 },
                 required: ['member_id', 'state', 'messages'],
@@ -973,10 +976,10 @@ export function buildToolDefinitions(getApi) {
               },
             },
             unclaimed: { type: 'number', description: 'Unread mail addressed to the orchestrator itself.' },
-            total: { type: 'number' },
-            others: { type: 'number' },
+            unread: { type: 'number' },
+            unread_others: { type: 'number' },
           },
-          required: ['dispatched', 'skipped', 'stuck', 'unclaimed', 'total', 'others'],
+          required: ['dispatched', 'skipped', 'stuck', 'unclaimed', 'unread', 'unread_others'],
           additionalProperties: false,
         },
         render: (_args, value) => {
@@ -991,7 +994,9 @@ export function buildToolDefinitions(getApi) {
           const stuck = value.stuck.length === 0
             ? ''
             : `\nstuck: ${value.stuck.map(row => `${row.member_id} (${row.reason}; ${row.messages} message(s) still unread)`).join(', ')}`
-          const occupancy = value.total === 0 ? 'mailbox: empty' : `mailbox: ${value.total} in total, ${value.others} not yours`
+          const occupancy = value.unread === 0
+            ? 'mailbox: nothing unread'
+            : `mailbox: ${value.unread} unread, ${value.unread_others} addressed to others`
           const pendingForYou = value.unclaimed === 0 ? '' : ` — ${value.unclaimed} unread message(s) are yours: read them with member_inbox`
           return [{ type: 'text', text: `${started}${skipped}${stuck}\n\n${occupancy}${pendingForYou}` }]
         },
@@ -1057,9 +1062,9 @@ export function buildToolDefinitions(getApi) {
           dispatched,
           skipped,
           stuck,
-          unclaimed: occupancy.total - occupancy.others - occupancy.messages.length,
-          total: occupancy.total,
-          others: occupancy.others,
+          unclaimed: occupancy.unreadYours,
+          unread: occupancy.unread,
+          unread_others: occupancy.unreadOthers,
         }
       },
     },
@@ -1124,13 +1129,12 @@ export function buildToolDefinitions(getApi) {
     },
     {
       name: 'member_inbox',
-      description: 'Read messages left for you by other members. Call it after every member result and before each step: a message left for you earlier is still there until it is read. Reading consumes the message for you only. The result also reports how many messages the server holds in total, including mail addressed to others; while that total is above zero, keep working instead of finishing.',
+      description: 'Read messages left for you by other members. Call it after every member result and before each step. Reading delivers a message: it leaves the mailbox and is recorded in your own context, so it is never returned twice. Reading consumes the message for you only. The result also reports how many messages the server holds in total, including mail addressed to others; while that total is above zero, keep working instead of finishing.',
       parameters: {
         type: 'object',
         properties: {
           limit: { type: 'number', description: 'Maximum messages to return, newest last. Defaults to 20.' },
           ack: { type: 'boolean', description: 'Mark the returned messages consumed. Defaults to true.' },
-          include_read: { type: 'boolean', description: 'Also return messages you already consumed. Defaults to false.' },
         },
         additionalProperties: false,
       },
@@ -1148,37 +1152,33 @@ export function buildToolDefinitions(getApi) {
                   topic: { type: 'string' },
                   body: { type: 'string' },
                   at: { type: 'number' },
-                  state: { type: 'string' },
                 },
-                required: ['id', 'from_member', 'topic', 'body', 'at', 'state'],
+                required: ['id', 'from_member', 'topic', 'body', 'at'],
                 additionalProperties: false,
               },
             },
-            total: { type: 'number' },
-            others: { type: 'number' },
+            stored: { type: 'number' },
+            unread: { type: 'number' },
+            unread_yours: { type: 'number' },
+            unread_others: { type: 'number' },
             role: { type: 'string' },
           },
-          required: ['messages', 'total', 'others', 'role'],
+          required: ['messages', 'stored', 'unread', 'unread_yours', 'unread_others', 'role'],
           additionalProperties: false,
         },
         render: (_args, value) => {
-          const fresh = value.messages.filter(message => message.state === 'new')
-          const handled = value.messages.filter(message => message.state === 'handled-earlier')
           const line = message => `[${message.from_member}${message.topic === '' ? '' : ` · ${message.topic}`}] ${message.body}`
-          const body = fresh.length === 0 && handled.length === 0
+          const body = value.messages.length === 0
             ? '(no messages)'
-            : [
-                fresh.length === 0 ? '(nothing new)' : fresh.map(line).join('\n\n'),
-                handled.length === 0 ? '' : `already handled earlier in this member's life: ${handled.map(line).join('\n\n')}`,
-              ].filter(part => part !== '').join('\n\n')
-          const occupancy = value.total === 0
+            : value.messages.map(line).join('\n\n')
+          const occupancy = value.unread === 0
             ? 'mailbox: empty'
-            : `mailbox: ${value.total} in total, ${value.others} addressed to others`
+            : `mailbox: ${value.unread} unread (${value.unread_yours} yours, ${value.unread_others} addressed to others)`
           // Only the orchestrator can dispatch, so only it is told to. Telling a
           // member would make it try a call that is reserved and rejected.
-          const rule = value.role !== 'orchestrator' || value.total === 0
+          const rule = value.role !== 'orchestrator' || value.unread_others === 0
             ? ''
-            : ' — while the server is not empty, call member_dispatch for mail addressed to others instead of concluding; you cannot read it'
+            : ' — while mail for other members is unread, call member_dispatch instead of concluding; you cannot read it'
           return [{ type: 'text', text: `${body}\n\n${occupancy}${rule}` }]
         },
       },
@@ -1189,12 +1189,11 @@ export function buildToolDefinitions(getApi) {
         // Only a known mailbox reads: a member generation, or the orchestrator's
         // own address. A child this plugin never reserved gets nothing 鈥?the inbox
         // is point-to-point, never a broadcast channel.
-        if (caller.memberId === undefined) return { messages: [], total: 0, others: 0, role: 'member' }
+        if (caller.memberId === undefined) return { messages: [], stored: 0, unread: 0, unread_yours: 0, unread_others: 0, role: 'member' }
         const result = await mailServer.inbox({
           reader: { childId: caller.childId, memberId: caller.memberId, generation: caller.generation },
           limit: args.limit,
           ack: args.ack !== false,
-          includeRead: args.include_read !== false,
         })
         return {
           messages: result.messages.map(message => ({
@@ -1203,10 +1202,11 @@ export function buildToolDefinitions(getApi) {
             topic: message.topic ?? '',
             body: message.body,
             at: message.at,
-            state: message.handled ? 'handled-earlier' : 'new',
           })),
-          total: result.total,
-          others: result.others,
+          stored: result.stored,
+          unread: result.unread,
+          unread_yours: result.unreadYours,
+          unread_others: result.unreadOthers,
           role: caller.memberId === ORCHESTRATOR_MEMBER_ID ? 'orchestrator' : 'member',
         }
       },
