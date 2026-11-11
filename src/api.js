@@ -842,10 +842,9 @@ export function buildToolDefinitions(getApi) {
 
   return [
     {
-      name: 'seeded_fork',
-      description: 'Start a member of this orchestration; it keeps the work it did before. '
-        + 'A later call with the same member_id continues that member, so it can re-examine its own earlier work; '
-        + 'do not use it for independent parallel work, which is what the plain subagent tool is for. '
+      name: 'member_start',
+      description: 'Start a member of this orchestration on a task. A new member_id starts a new member; calling it again with the same member_id continues that member, which keeps the work it already did and can re-examine it. '
+        + 'Do not use it for independent parallel work, which is what the plain subagent tool is for. '
         + 'Write the peer links into task: which members this one should message with member_post, about what, and what it decides alone. '
         + 'Members may talk to each other directly, so route through the orchestrator only for decisions and scope.',
       parameters: memberParameters,
@@ -853,51 +852,26 @@ export function buildToolDefinitions(getApi) {
       async execute(args, exec) {
         const api = getApi()
         const parent = exec?.agent
-        if (parent === undefined) throw new Error('seeded_fork requires a live calling agent')
-        const started = await api.fork({
-          parent,
-          memberId: args.member_id,
-          prompt: args.task,
-          seedFrom: args.seed_from,
-          label: args.member_id,
-          delivery: 'parent',
-          signal: exec.signal,
-        })
-        return {
-          member_id: args.member_id,
-          state: 'started',
-          inherited: started.seedFrom === undefined
-            ? 'it starts fresh'
-            : 'it brought its earlier work with it',
-        }
-      },
-    },
-    {
-      name: 'seeded_rotate',
-      description: 'Start a member again so it re-examines its own earlier work, keeping everything it did before. '
-        + 'Use it to let the same role revise its own earlier conclusion instead of restating the context to a fresh child.',
-      parameters: {
-        type: 'object',
-        properties: {
-          member_id: { type: 'string', description: 'Member identity used by an earlier seeded_fork call.' },
-          task: { type: 'string', description: 'What this member should do now, given what it already did.' },
-        },
-        required: ['member_id', 'task'],
-        additionalProperties: false,
-      },
-      output: { schema: resultSchema, render },
-      async execute(args, exec) {
-        const api = getApi()
-        const parent = exec?.agent
-        if (parent === undefined) throw new Error('seeded_rotate requires a live calling agent')
-        const started = await api.rotate({
-          parent,
-          memberId: args.member_id,
-          prompt: args.task,
-          label: args.member_id,
-          delivery: 'parent',
-          signal: exec.signal,
-        })
+        if (parent === undefined) throw new Error('member_start requires a live calling agent')
+        const journal = api.journalForSession(parent.session.id)
+        const { state } = await api.memberDeliveryState(args.member_id, journal)
+        const started = state === 'none'
+          ? await api.fork({
+              parent,
+              memberId: args.member_id,
+              prompt: args.task,
+              label: args.member_id,
+              delivery: 'parent',
+              signal: exec.signal,
+            })
+          : await api.rotate({
+              parent,
+              memberId: args.member_id,
+              prompt: args.task,
+              label: args.member_id,
+              delivery: 'parent',
+              signal: exec.signal,
+            })
         return {
           member_id: args.member_id,
           state: 'started',

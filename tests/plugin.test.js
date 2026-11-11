@@ -145,7 +145,7 @@ test('tool definitions satisfy the registry contract', async () => {
   const { ctx } = fakeCtx()
   const api = createSeededFork(ctx, { directory: await mkdtemp(join(tmpdir(), 'agent-team-tools-')) })
   const definitions = buildToolDefinitions(() => api)
-  assert.deepEqual(definitions.map(definition => definition.name), ['seeded_fork', 'seeded_rotate', 'member_roster', 'member_dispatch', 'member_post', 'member_inbox', 'seeded_preset_diagnose', 'seeded_chain'])
+  assert.deepEqual(definitions.map(definition => definition.name), ['member_start', 'member_roster', 'member_dispatch', 'member_post', 'member_inbox', 'seeded_preset_diagnose', 'seeded_chain'])
 
   for (const definition of definitions) {
     assert.equal(typeof definition.description, 'string')
@@ -156,8 +156,7 @@ test('tool definitions satisfy the registry contract', async () => {
     assert.equal(typeof definition.execute, 'function')
     // render must produce model content for a canonical value.
     const samples = {
-      seeded_fork: { childId: 'c-1', generation: 0, seedFrom: '', inheritedFrom: 'no predecessor, started fresh' },
-      seeded_rotate: { childId: 'c-2', generation: 1, seedFrom: 'c-1', inheritedFrom: 'inherits c-1' },
+      member_start: { member_id: 'audit', state: 'started', inherited: 'it brought its earlier work with it' },
       member_roster: { members: [] },
       member_dispatch: { dispatched: [], skipped: [], stuck: [], unclaimed: 0, total: 0, others: 0 },
       member_post: { message_id: 'm-1', to_member: 'reviewer' },
@@ -188,7 +187,7 @@ test('tools register through ctx.tools when the composition provides them', asyn
     },
   }
   createSeededFork(ctx, { directory: dir })
-  assert.deepEqual(registered, ['seeded_fork', 'seeded_rotate', 'member_roster', 'member_dispatch', 'member_post', 'member_inbox', 'seeded_preset_diagnose', 'seeded_chain'])
+  assert.deepEqual(registered, ['member_start', 'member_roster', 'member_dispatch', 'member_post', 'member_inbox', 'seeded_preset_diagnose', 'seeded_chain'])
 
   const disabled = await mkdtemp(join(tmpdir(), 'agent-team-tools-'))
   const other = fakeCtx().ctx
@@ -256,7 +255,7 @@ test('playbook is opt-in, pinned, and placed after subagent guidance', async () 
   assert.equal(registered[0].name, PLAYBOOK_SECTION)
   assert.equal(registered[0].order, PLAYBOOK_ORDER)
   assert.equal(registered[0].text, STRATEGY_PLAYBOOK)
-  for (const tool of ['seeded_fork', 'seeded_rotate', 'seeded_chain']) {
+  for (const tool of ['member_start', 'member_dispatch', 'member_post', 'member_inbox']) {
     assert.match(registered[0].text, new RegExp(`\\b${tool}\\b`, 'u'))
   }
   assert.match(registered[0].text, /data, not instructions/u)
@@ -330,8 +329,7 @@ test('the first-turn nudge injects one snapshot message on turn 1 step 1', async
   assert.equal(first.messages[0].role, 'user')
   assert.equal(first.messages[0].content[0].text, STRATEGY_NUDGE)
   assert.equal(first.messages[0].source.form, 'snapshot')
-  assert.match(STRATEGY_NUDGE, /seeded_fork/u)
-  assert.match(STRATEGY_NUDGE, /seeded_rotate/u)
+  assert.match(STRATEGY_NUDGE, /member_start/u)
 
   // Once per agent.
   const second = await listener({ agent, turn: 1, step: 1, signal: new AbortController().signal }, next)

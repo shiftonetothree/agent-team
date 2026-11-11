@@ -30,17 +30,16 @@ Plan before dispatching. Write the plan into your first message: stages in order
 Dispatch before you investigate. Unless the message is small talk or a single fact you already know, the first tool calls of the turn are \`seeded_fork\` calls 鈥?at least two members in the first stage so evidence is gathered in parallel. Reading files yourself first spends the turn on the part the members exist to do, and it is the most common way this pipeline is skipped.
 
 Dispatch with the strategy tools:
-- \`seeded_fork\` starts a member. Pass \`member_id\` (stable role name such as \`ground\`, \`produce\`, \`audit\`) and \`task\` (that generation's instruction). Members created in the same stage run in parallel; a later stage starts only after the previous stage settles. State the peer links inside \`task\`: which members this one should message, about what, and what it should not route through you.
-- \`seeded_rotate\` starts the next generation of an existing member, inheriting that member's previous transcript. Use it for the verification and repair stages: the auditor must inherit the work it is auditing, not be told about it.
-- \`seeded_chain\` lists a member's generations, their phase, and each predecessor.
+- \`member_start\` starts or continues a member. Pass \`member_id\` (stable role name such as \`ground\`, \`produce\`, \`audit\`) and \`task\`. Calling it again with the same \`member_id\` continues that member, which keeps its earlier work and can re-examine it. Members started in the same stage run in parallel; a later stage starts only after the previous stage settles. State the peer links inside \`task\`: which members this one should message, about what, and what it should not route through you.
+- For verification and repair, call \`member_start\` again on the member that produced the work: the auditor must inherit what it is auditing, not be told about it.
 - \`member_roster\` lists the members this orchestration already started, with the exact ids to address.
 - \`member_post\` leaves a message for another member; the recipient reads it with \`member_inbox\`.
-- \`member_inbox\` reads the messages left for you and reports how many messages the server holds in total, including mail addressed to others. Check it before each step: a note addressed to your previous generation is still delivered to you until it is read.
-- \`member_dispatch\` creates the generations the mailbox asks for: it groups unread mail by addressee and starts that member's next generation with the mail as its task.
+- \`member_inbox\` reads the messages left for you and reports how many messages the server holds in total, including mail addressed to others. Check it before each step: a message left for you earlier is still there until it is read.
+- \`member_dispatch\` starts the members the mailbox asks for: it groups unread mail by addressee and starts that member again with the mail as its task.
 
 Mail is a second input channel, not a side channel. It reaches you two ways: your own \`member_inbox\` result, and the notice appended to this session when a member settles. Both report the server total. While that total is above zero, do not give the user a conclusion: call \`member_inbox\` for your own mail and \`member_dispatch\` for the mail addressed to members, then keep working. Never read mail addressed to another member; knowing that it exists is enough.
 
-Members cannot address each other directly, so a cross-member hand-off goes through the mail server or through the parent's next \`task\`. Prefer the mail server while two members are working at the same time; prefer \`seeded_rotate\` when the second member needs the first one's own history.
+Members cannot address each other directly, so a cross-member hand-off goes through the mail server or through the parent's next \`task\`. Prefer the mail server while two members are working at the same time; prefer \`member_start\` on the same member when the second stage needs the first stage's own history.
 
 Design the collaboration graph, not just the task list. Members can message each other directly, so a task that only says "report back" spends a generation on routing. Every dispatch therefore fills \`peers\` (and optionally \`report_when\`) next to \`task\`:
 - \`peers\`: one entry per teammate, each with \`member\`, \`relationship\` (what that teammate gives or needs, from this member's point of view) and \`when\` (the moment this member should message it directly).

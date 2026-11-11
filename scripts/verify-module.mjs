@@ -40,7 +40,7 @@ check('api exports LineageJournal', () => assert.equal(typeof api.LineageJournal
 
 const playbook = await import(pathToFileURL(resolve(root, 'src/playbook.js')).href)
 check('playbook names its own tools', () => {
-  for (const tool of ['seeded_fork', 'seeded_rotate', 'seeded_chain']) {
+  for (const tool of ['member_start', 'member_dispatch', 'member_post', 'member_inbox']) {
     assert.match(playbook.STRATEGY_PLAYBOOK, new RegExp(`\\b${tool}\\b`, 'u'), `playbook must name ${tool}`)
   }
 })

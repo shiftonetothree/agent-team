@@ -124,8 +124,8 @@ const g2 = await team.rotate({ parent: agent, memberId: 'audit', prompt: '复核
 
 | 工具 | 作用 |
 |---|---|
-| `seeded_fork` | 启动/继续一个成员（`task` 是它这次要做的；同伴关系写在 `peers`） |
-| `seeded_rotate` | 让成员在保留此前工作的前提下再做一次（上一次未落定会等；跨进程明确报错） |
+| `member_start` | 启动或继续一个成员：同一 `member_id` 再调一次 = 带着此前工作继续（`task` 是这次要做的；同伴关系写在 `peers`） |
+
 | `seeded_chain` | **内部诊断**：列出该成员已记录的各次化身 |
 | `member_roster` | 列出本编排的成员与忙碌状态（含 `orchestrator` 地址） |
 | `member_dispatch` | 按信箱内容按需启动成员：把未读邮件按收件人分组，给每个收件成员开工（正在跑的跳过） |
@@ -141,7 +141,7 @@ const g2 = await team.rotate({ parent: agent, memberId: 'audit', prompt: '复核
 |---|---|---|
 | persona 覆盖 | preset 的 `persona` 行 | 把 persona 换成"分阶段计划、先派成员再回答"的角色 |
 | 系统提示 | `agent-team:strategy` section（order 2810） | 完整打法与五条约束 |
-| 首轮提示 | `preset-session.js`：`agent/pre-step` 在 turn 1 step 1 注入 snapshot 用户消息 | 把「先出计划、第一波工具调用必须是 seeded_fork、用 rotate 复核」放在用户消息旁边 |
+| 首轮提示 | `preset-session.js`：`agent/pre-step` 在 turn 1 step 1 注入 snapshot 用户消息 | 把「先出计划、第一波工具调用必须是 member_start、用同一成员复核」放在用户消息旁边 |
 
 preset 的注册方式：**等 `standard` 出现 → 克隆它的插件行 → 追加两行（手册 + 首轮提示）→ 异步注册，失败只进诊断**。
 
@@ -227,7 +227,7 @@ member_dispatch()
 真机验证（headless）：
 
 ```
-工具序列：seeded_fork → … → member_inbox → seeded_fork → member_inbox
+工具序列：member_start → … → member_inbox → member_start → member_inbox
 邮箱存储：from=audit to=orchestrator topic=finding readers=session-c22a2344…
 编排者第一次读：1 条（来自 audit）｜producer 读：无消息｜编排者第二次读：0 条（已消费）
 ```
@@ -300,7 +300,7 @@ node scripts/demo.mjs            # 假 host 的 fork → rotate → rotate 演�
 | 代际继承 | 账本 `prepare seeded:true, boundary=32, inheritedEvents=33`；子会话 `inherited 34 events, marker at seq 34`，正文是上一代回答 |
 | 前缀缓存 | 第二代首个自有请求 `inputTokens=195, cacheReadTokens=15360` |
 | 池不泄漏 | `maxActiveSubagents` 覆盖成 2，连跑 5 代全成功，无 `ACTIVATION_LIMIT_REACHED` |
-| 成员投信 | `member_post → seeded_fork`；成员读到邮件并按内容作答 |
+| 成员投信 | `member_post → member_start`；成员读到邮件并按内容作答 |
 | 编排者信箱 | 成员给 `orchestrator` 投信，编排者只读到写给自己的 1 条；其他成员读不到 |
 | 自动唤醒 | audit gen0 结算 → producer 投信 → audit gen1 以 `auto-wake` 记录被创建并读取 |
 | preset 注册 | `agent-team: presets registered=[agent-team] errors=[]` |
