@@ -372,11 +372,15 @@ export class LineageJournal {
   /**
    * How many automatic reincarnations a member already consumed.
    * @param {string} memberId - member identity.
+   * @param {string} [reason] - count only automatic starts with this reason.
    * @returns {Promise<number>}
    */
-  async autoWakeCount(memberId) {
+  async autoWakeCount(memberId, reason) {
     await this.#load()
-    return foldRecords(this.#records).wakes.get(memberId) ?? 0
+    if (reason === undefined) return foldRecords(this.#records).wakes.get(memberId) ?? 0
+    return this.#records.filter(record => record.kind === 'auto-wake'
+      && record.reason === reason
+      && (record.memberId ?? '') === memberId).length
   }
 
   /**

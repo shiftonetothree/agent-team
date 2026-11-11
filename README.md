@@ -176,7 +176,9 @@ Before each step, call member_inbox ... To reach another member, call member_ros
 | 该成员达代数上限 / 创建失败 | 进 `stuck`（带原因与未读数），邮件保持未读，不假装处理过 |
 | 同名成员两次派发并发 | 每成员一把锁，第二次报 `a dispatch is already starting a generation` |
 | 写给 `orchestrator` 的信 | 不由 `member_dispatch` 处理，结果里用 `unclaimed` 提示主 agent 自己去 `member_inbox` 读 |
+| 某代结算时自己信箱还有未读 | **结算即自愈**：插件直接给它起下一代（`reason: unread-mail-retry`），不必等主 agent 再轮询 |
 
+自愈的重试有独立预算（`mailRetry.maxPerMember`，默认 2，配置 `mailRetry: false` 可关闭），所以"一直不读信"的成员不会无限转世；重试与派发、自动唤醒共用同一把每成员锁，不会同时给一个人起两代。
 结果里因此多了两个字段：`stuck`（拿不到转世的邮件）和 `unclaimed`（写给主 agent 自己、还没读的条数）——两条都会出现在工具输出里，不会被静默吞掉。
 #### 协作关系由编排者设计，不由成员自己摸索
 

@@ -172,13 +172,18 @@ test('posting to an unknown member warns instead of losing the message', async (
   assert.equal(accepted.warning, undefined)
 })
 
-async function wakeSetup({ autoWake, deferResults = false } = {}) {
+async function wakeSetup({ autoWake, mailRetry, deferResults = false } = {}) {
   const dir = await tempDir()
   const parent = { session: fakeSession('parent-wake', []) }
   const harness = fakeCtx({ deferResults })
   harness.sessions.set('parent-wake', parent.session)
   harness.ctx.agents = { get: id => (id === 'parent-wake' ? parent : undefined) }
-  const api = createSeededFork(harness.ctx, { directory: dir, providerName: 'p-wake', ...(autoWake === undefined ? {} : { autoWake }) })
+  const api = createSeededFork(harness.ctx, {
+    directory: dir,
+    providerName: 'p-wake',
+    ...(autoWake === undefined ? {} : { autoWake }),
+    ...(mailRetry === undefined ? {} : { mailRetry }),
+  })
   const tools = new Map(buildToolDefinitions(() => api).map(definition => [definition.name, definition]))
   return { ...harness, dir, parent, api, tools }
 }
@@ -547,4 +552,55 @@ test('a wake that could not start releases its lock', async () => {
     { agent: { session: { id: 'parent-wake' } } },
   )
   assert.match(second.wake, /started the next generation/u, 'the lock was released after the first wake')
+})
+
+test('a generation that ends with unread mail starts the next one by itself', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  // Mail lands while audit is still running, so it settles with it unread.
+  await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'check c.ts:12 as well' },
+    { agent: { session: { id: audit.childId } } },
+  )
+  await audit.result
+  await new Promise(resolve => setTimeout(resolve, 60))
+
+  const chain = await api.chain('audit')
+  assert.equal(chain.length, 2, 'the unread mail started generation 1')
+  assert.equal(chain[1].seedFrom, audit.childId)
+  const journal = api.journalForSession('parent-wake')
+  const count = await journal.autoWakeCount('audit', 'unread-mail-retry')
+  assert.equal(count, 1, 'the retry is recorded with its own reason')
+})
+
+test('the retry budget stops a member that keeps ignoring its inbox', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false, mailRetry: { maxPerMember: 1 } })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'first' },
+    { agent: { session: { id: audit.childId } } },
+  )
+  await audit.result
+  await new Promise(resolve => setTimeout(resolve, 60))
+  const afterFirst = (await api.chain('audit')).length
+  assert.equal(afterFirst, 2)
+
+  // Gen 1 also ends without reading, but the budget is spent.
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal((await api.chain('audit')).length, 2, 'no further retry once the budget is spent')
+})
+
+test('a generation that read its mail is not retried', async () => {
+  const { parent, api, tools, starts } = await wakeSetup({ autoWake: false, deferResults: true })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'handled properly' },
+    { agent: { session: { id: audit.childId } } },
+  )
+  // Read it before the generation settles, which is what the preamble asks for.
+  await tools.get('member_inbox').execute({}, { agent: { session: { id: audit.childId } } })
+  starts.at(-1).settle('completed')
+  await audit.result
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal((await api.chain('audit')).length, 1, 'read mail needs no new generation')
 })

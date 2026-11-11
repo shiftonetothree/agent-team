@@ -272,6 +272,10 @@ export function createSeededFork(ctx, config = {}) {
   const providerName = config.providerName ?? 'agent-team'
   const maxDepth = config.maxDepth ?? 1
   const defaultDelivery = config.delivery ?? 'caller'
+  /** Self-healing retry for mail a settled generation never read. */
+  const mailRetry = config.mailRetry === false
+    ? { enabled: false }
+    : { enabled: true, maxPerMember: config.mailRetry?.maxPerMember ?? 2 }
   const registry = new JournalRegistry({
     directory,
     maxGenerations: config.maxGenerations ?? 16,
@@ -510,11 +514,62 @@ export function createSeededFork(ctx, config = {}) {
         }
       })
     }
+    if (mailRetry.enabled) {
+      // A generation that ends with unread mail addressed to it left work behind.
+      // Hand that mail to the next generation here, so it does not depend on the
+      // orchestrator polling again.
+      void journaled.then(() => retryUnreadMail({ parent, memberId, childId: reservation.childId, journal }))
+    }
     return {
       childId: reservation.childId,
       generation: reservation.generation,
       activation,
       result,
+    }
+  }
+
+  /**
+   * Start the next generation for mail its predecessor never read.
+   *
+   * A settled generation that leaves unread mail behind has not done its job, and
+   * waiting for the orchestrator to notice costs a full round trip. This runs at
+   * settlement, takes the same per-member lock as dispatch and auto-wake, and is
+   * bounded so a member that keeps ignoring its inbox cannot spin.
+   *
+   * @param {object} request
+   * @param {any} request.parent - the orchestrating agent, which owns the session.
+   * @param {string} request.memberId - member that just settled.
+   * @param {string} request.childId - the generation that settled.
+   * @param {any} request.journal - the orchestration journal.
+   * @returns {Promise<void>}
+   */
+  async function retryUnreadMail({ parent, memberId, childId, journal }) {
+    try {
+      const mailServer = mailServerForSession(parent.session.id)
+      const own = (await mailServer.pending({ excluding: ORCHESTRATOR_MEMBER_ID }))
+        .filter(message => message.toMember === memberId)
+      if (own.length === 0) return
+      const used = await journal.autoWakeCount(memberId, 'unread-mail-retry')
+      if (used >= mailRetry.maxPerMember) return
+      if (!claimMember(memberId)) return
+      try {
+        const lines = own
+          .map(message => `[${message.from.memberId ?? 'orchestrator'}#${message.from.generation ?? 0}${message.topic === undefined ? '' : ` ${message.topic}`}] ${message.body}`)
+          .join('\n')
+        const started = await rotate({
+          parent,
+          memberId,
+          prompt: `Your previous generation ended without reading ${own.length} message(s) addressed to you:\n${lines}\n\n`
+            + 'Read them with member_inbox and handle them before you finish. This supersedes any inherited instruction that your work was done.',
+        })
+        await mailServer.markDispatched(own.map(message => message.id), started.childId)
+        await journal.markAutoWake(started.childId, { memberId, reason: 'unread-mail-retry' })
+      } finally {
+        releaseMember(memberId)
+      }
+    } catch {
+      // A retry that cannot start (generation cap, detached parent) leaves the
+      // mail unread, where the next dispatch or notice still sees it.
     }
   }
 
