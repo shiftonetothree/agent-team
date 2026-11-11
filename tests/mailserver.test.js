@@ -686,3 +686,21 @@ test('reading removes the message from the mailbox', async () => {
   assert.match(after, /mailbox: empty/u)
   assert.doesNotMatch(after, /member_dispatch/u)
 })
+
+test('a failed generation is left to the orchestrator, not auto-restarted', async () => {
+  const { parent, api, tools, starts } = await wakeSetup({ autoWake: false, deferResults: true })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'never read, the child died first' },
+    { agent: { session: { id: audit.childId } } },
+  )
+  starts.at(-1).fail(new Error('provider exploded'))
+  await assert.rejects(() => audit.result)
+
+  await new Promise(resolve => setTimeout(resolve, 80))
+  assert.equal((await api.chain('audit')).length, 1, 'no replacement generation was started')
+  const journal = api.journalForSession('parent-wake')
+  assert.equal(await journal.autoWakeCount('audit', 'unread-mail-retry'), 0)
+  const entry = await journal.entryOf(audit.childId)
+  assert.equal(entry.phase, 'failed', 'the failure is recorded for the orchestrator to see')
+})

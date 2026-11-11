@@ -145,8 +145,9 @@ export function fakeCtx({ sessions = new Map(), deferResults = false } = {}) {
         starts.push(entry)
         let result
         if (deferResults) {
-          result = new Promise(resolve => {
+          result = new Promise((resolve, reject) => {
             entry.settle = (stopReason = 'completed') => resolve({ stopReason, childId })
+            entry.fail = error => reject(error ?? new Error('child failed'))
           })
         } else {
           result = Promise.resolve({ stopReason: 'completed', childId })

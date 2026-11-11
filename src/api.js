@@ -524,10 +524,15 @@ export function createSeededFork(ctx, config = {}) {
       })
     }
     if (mailRetry.enabled) {
-      // A generation that ends with unread mail addressed to it left work behind.
-      // Hand that mail to the next generation here, so it does not depend on the
-      // orchestrator polling again.
-      void journaled.then(() => retryUnreadMail({ parent, memberId, childId: reservation.childId, journal }))
+      // A generation that finishes cleanly with unread mail addressed to it left
+      // work behind, so the mail goes to the next generation without waiting for
+      // the orchestrator. A generation that *fails* is different: crash and
+      // cancellation handling belongs to the orchestrator and to DSH, so the
+      // plugin starts nothing on that path.
+      void result.then(settled => {
+        if (settled?.stopReason !== undefined && settled.stopReason !== 'completed') return
+        return retryUnreadMail({ parent, memberId, childId: reservation.childId, journal })
+      }, () => {})
     }
     return {
       childId: reservation.childId,
