@@ -159,7 +159,7 @@ test('tool definitions satisfy the registry contract', async () => {
       seeded_fork: { childId: 'c-1', generation: 0, seedFrom: '', inheritedFrom: 'no predecessor, started fresh' },
       seeded_rotate: { childId: 'c-2', generation: 1, seedFrom: 'c-1', inheritedFrom: 'inherits c-1' },
       member_roster: { members: [] },
-      member_dispatch: { dispatched: [], skipped: [], total: 0, others: 0 },
+      member_dispatch: { dispatched: [], skipped: [], stuck: [], unclaimed: 0, total: 0, others: 0 },
       member_post: { message_id: 'm-1', to_member: 'reviewer' },
       member_inbox: { messages: [] },
       seeded_preset_diagnose: { json: '{}' },

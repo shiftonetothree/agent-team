@@ -357,7 +357,7 @@ test('mailbox counts include mail addressed to others, without exposing it', asy
   assert.equal(inbox.others, 1, 'one message belongs to another mailbox')
 })
 
-test('member_dispatch starts a generation from the mail and does not repeat it', async () => {
+test('member_dispatch starts a generation from the mail and leases it', async () => {
   const { parent, api, tools } = await wakeSetup({ autoWake: false })
   const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
   const produce = await api.fork({ parent, memberId: 'produce', prompt: 'produce' })
@@ -374,9 +374,6 @@ test('member_dispatch starts a generation from the mail and does not repeat it',
   assert.equal(first.dispatched[0].member_id, 'produce')
   assert.equal(first.dispatched[0].messages, 1)
   assert.equal(first.dispatched[0].generation, 1, 'produce gained a generation for the mail')
-
-  const second = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
-  assert.deepEqual(second.dispatched, [], 'a dispatched message is not dispatched twice')
 })
 
 test('member_dispatch leaves a running member to its own inbox', async () => {
@@ -473,4 +470,81 @@ test('the journal carries the declared links', async () => {
   const entry = await api.journalForSession('parent-wake').entryOf(audit.childId)
   assert.deepEqual(entry.peers, peers)
   assert.equal(entry.reportWhen, 'on scope only')
+})
+
+test('mail whose generation finished without reading is handed to the next one', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  const produce = await api.fork({ parent, memberId: 'produce', prompt: 'produce' })
+  await produce.result
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  await tools.get('member_post').execute(
+    { to_member: 'produce', body: 'a.ts:31 is unguarded', topic: 'finding' },
+    { agent: { session: { id: audit.childId } } },
+  )
+
+  const first = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(first.dispatched.length, 1)
+  const leasedChild = first.dispatched[0].child_id
+  await new Promise(resolve => setTimeout(resolve, 30))
+
+  // The dispatched generation ended without reading, so the mail is still unread.
+  const second = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(second.dispatched.length, 1, 'an expired lease is re-dispatched')
+  assert.notEqual(second.dispatched[0].child_id, leasedChild)
+})
+
+test('mail addressed to a member that does not exist yet creates that member', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  // Posting before the member exists is the documented brief-first flow.
+  await tools.get('member_post').execute(
+    { to_member: 'review', body: 'start by reading the config' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+  const result = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(result.dispatched.length, 1)
+  assert.equal(result.dispatched[0].member_id, 'review')
+  assert.equal(result.dispatched[0].generation, 0, 'the member is created on demand')
+  assert.equal((await api.chain('review')).length, 1)
+})
+
+test('mail that cannot get a generation is reported as stuck, not swallowed', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  // Exhaust the cap so no further generation can start for this member.
+  const journal = api.journalForSession('parent-wake')
+  for (let i = 0; i < 40; i += 1) {
+    try { await journal.reserve({ memberId: 'audit' }) } catch { break }
+  }
+
+  await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'nobody can read this' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+  const result = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(result.dispatched.length, 0)
+  assert.equal(result.stuck.length, 1)
+  assert.match(result.stuck[0].reason, /cap/u)
+  assert.equal(result.stuck[0].messages, 1, 'the message is still counted as unread work')
+})
+
+test('a wake that could not start releases its lock', async () => {
+  const { parent, api, tools } = await wakeSetup()
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await audit.result
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const first = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'first' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+  assert.match(first.wake, /started the next generation/u)
+  await new Promise(resolve => setTimeout(resolve, 30))
+
+  const second = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'second' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+  assert.match(second.wake, /started the next generation/u, 'the lock was released after the first wake')
 })

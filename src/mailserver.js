@@ -218,10 +218,11 @@ export class MailServer {
   }
 
   /**
-   * Messages no member has been dispatched for yet, oldest first.
+   * Unread mail addressed to a member, with its dispatch lease.
    *
-   * The orchestrator uses this to decide which generations to create from the
-   * mail itself, instead of guessing from member state.
+   * A lease is not a tombstone: a message stays in this list until some
+   * generation actually reads it, so mail whose generation finished without
+   * reading it can be handed to the next one instead of becoming dead.
    *
    * @param {{ limit?: number, excluding?: string }} [options] - window and one
    *   mailbox to skip (the orchestrator reads its own mail directly).
@@ -230,26 +231,26 @@ export class MailServer {
   async pending({ limit = 50, excluding } = {}) {
     await this.#load()
     return this.#messages
-      .filter(message => message.dispatchedAt === undefined
-        && message.readers.length === 0
-        && message.toMember !== excluding)
+      .filter(message => message.readers.length === 0 && message.toMember !== excluding)
       .slice(0, limit)
       .map(message => ({ ...message, readers: [...message.readers] }))
   }
 
   /**
-   * Record that these messages now have a generation working on them.
+   * Lease these messages to the generation that will read them.
    * @param {string[]} ids - message ids.
+   * @param {string} childId - the generation that was started for them.
    * @returns {Promise<number>} how many messages changed.
    */
-  async markDispatched(ids) {
+  async markDispatched(ids, childId) {
     return this.#serial(async () => {
       await this.#load()
       let changed = 0
       for (const id of ids) {
         const message = this.#messages.find(candidate => candidate.id === id)
-        if (message === undefined || message.dispatchedAt !== undefined) continue
+        if (message === undefined) continue
         message.dispatchedAt = Date.now()
+        message.dispatchedTo = childId
         changed += 1
       }
       if (changed > 0) await this.#persist()

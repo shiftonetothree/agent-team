@@ -164,6 +164,20 @@ Before each step, call member_inbox ... To reach another member, call member_ros
 
 子 agent 的轮次里没有可挂钩的插件事件，所以这是能做到的最强约束（提示 + 工具描述 + playbook）。
 
+#### 死信与租约
+
+"派发"不是盖章，是**租约**：`member_dispatch` 把邮件记成 `dispatchedTo = <childId>`，但只要没人真正读过它，它仍然留在 `pending` 里。
+
+| 情况 | 现在的行为 |
+|---|---|
+| 收件成员不存在（给还没创建的成员写信） | 派发时**按需创建**该成员（generation 0） |
+| 收件成员正在跑 | 跳过，它这一轮会自己读 |
+| 派发出的那一代结算了却没读 | 租约过期，下次 `member_dispatch` 会为新的一代重新派发 |
+| 该成员达代数上限 / 创建失败 | 进 `stuck`（带原因与未读数），邮件保持未读，不假装处理过 |
+| 同名成员两次派发并发 | 每成员一把锁，第二次报 `a dispatch is already starting a generation` |
+| 写给 `orchestrator` 的信 | 不由 `member_dispatch` 处理，结果里用 `unclaimed` 提示主 agent 自己去 `member_inbox` 读 |
+
+结果里因此多了两个字段：`stuck`（拿不到转世的邮件）和 `unclaimed`（写给主 agent 自己、还没读的条数）——两条都会出现在工具输出里，不会被静默吞掉。
 #### 协作关系由编排者设计，不由成员自己摸索
 
 成员之间默认太"安静"：每个成员只管做完自己的 task 就上报，所有协调都绕主 agent 转述。所以提示分两层：

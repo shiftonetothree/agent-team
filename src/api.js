@@ -585,30 +585,51 @@ export function createSeededFork(ctx, config = {}) {
    * @param {string} [reason] - short cause recorded in the journal.
    * @returns {Promise<{ woken: boolean, childId?: string, reason: string }>}
    */
+  /**
+   * Take the per-member generation lock shared by auto-wake and dispatch.
+   *
+   * Both paths start a generation for mail, so one lock keeps them from handing
+   * the same message to two generations.
+   *
+   * @param {string} memberId - member identity.
+   * @returns {boolean} false when another path is already starting a generation.
+   */
+  function claimMember(memberId) {
+    if (wakeInFlight.has(memberId)) return false
+    wakeInFlight.add(memberId)
+    return true
+  }
+
+  /**
+   * Release the per-member generation lock.
+   * @param {string} memberId - member identity.
+   */
+  function releaseMember(memberId) {
+    wakeInFlight.delete(memberId)
+  }
+
   async function wakeIfTerminal(memberId, sessionId, reason) {
     if (!autoWake.enabled) return { woken: false, reason: 'disabled' }
     if (memberId === ORCHESTRATOR_MEMBER_ID) return { woken: false, reason: 'orchestrator' }
-    if (wakeInFlight.has(memberId)) return { woken: false, reason: 'already-waking' }
-    const journal = registry.journalForSession(sessionId)
-    const head = await journal.head(memberId)
-    if (head === undefined) return { woken: false, reason: 'no-generation' }
-    if (head.phase === 'started') return { woken: false, reason: 'running' }
-    if (head.phase === 'reserved') return { woken: false, reason: 'not-started' }
-    const used = await journal.autoWakeCount(memberId)
-    if (used >= autoWake.maxPerMember) return { woken: false, reason: 'budget-exhausted' }
-    const agents = ctx?.get?.('agents')
-    const parent = typeof agents?.get === 'function' ? agents.get(sessionId) : undefined
-    if (parent === undefined) return { woken: false, reason: 'orchestrator-not-live' }
-
-    wakeInFlight.add(memberId)
+    if (!claimMember(memberId)) return { woken: false, reason: 'already-waking' }
     try {
+      const journal = registry.journalForSession(sessionId)
+      const head = await journal.head(memberId)
+      if (head === undefined) return { woken: false, reason: 'no-generation' }
+      if (head.phase === 'started') return { woken: false, reason: 'running' }
+      if (head.phase === 'reserved') return { woken: false, reason: 'not-started' }
+      const used = await journal.autoWakeCount(memberId)
+      if (used >= autoWake.maxPerMember) return { woken: false, reason: 'budget-exhausted' }
+      const agents = ctx?.get?.('agents')
+      const parent = typeof agents?.get === 'function' ? agents.get(sessionId) : undefined
+      if (parent === undefined) return { woken: false, reason: 'orchestrator-not-live' }
       const started = await rotate({ parent, memberId, prompt: autoWake.task })
       await journal.markAutoWake(started.childId, { memberId, reason: reason ?? 'inbound-mail' })
       return { woken: true, childId: started.childId, reason: 'woken' }
     } catch (error) {
       return { woken: false, reason: String(error?.message ?? error) }
     } finally {
-      wakeInFlight.delete(memberId)
+      releaseMember(memberId)
     }
   }
 
@@ -664,6 +685,8 @@ export function createSeededFork(ctx, config = {}) {
     resolveCaller,
     wakeIfTerminal,
     orchestratorId: ORCHESTRATOR_MEMBER_ID,
+    claimMember,
+    releaseMember,
     memberRoster,
     mailServerForSession,
     journalForSession: sessionId => registry.journalForSession(sessionId),
@@ -890,10 +913,25 @@ export function buildToolDefinitions(getApi) {
                 additionalProperties: false,
               },
             },
+            stuck: {
+              type: 'array',
+              description: 'Mail that no generation could be created for; it stays unread.',
+              items: {
+                type: 'object',
+                properties: {
+                  member_id: { type: 'string' },
+                  reason: { type: 'string' },
+                  messages: { type: 'number' },
+                },
+                required: ['member_id', 'reason', 'messages'],
+                additionalProperties: false,
+              },
+            },
+            unclaimed: { type: 'number', description: 'Unread mail addressed to the orchestrator itself.' },
             total: { type: 'number' },
             others: { type: 'number' },
           },
-          required: ['dispatched', 'skipped', 'total', 'others'],
+          required: ['dispatched', 'skipped', 'stuck', 'unclaimed', 'total', 'others'],
           additionalProperties: false,
         },
         render: (_args, value) => {
@@ -905,8 +943,12 @@ export function buildToolDefinitions(getApi) {
           const skipped = value.skipped.length === 0
             ? ''
             : `\nskipped: ${value.skipped.map(row => `${row.member_id} (${row.reason})`).join(', ')}`
+          const stuck = value.stuck.length === 0
+            ? ''
+            : `\nstuck: ${value.stuck.map(row => `${row.member_id} (${row.reason}; ${row.messages} message(s) still unread)`).join(', ')}`
           const occupancy = value.total === 0 ? 'mailbox: empty' : `mailbox: ${value.total} in total, ${value.others} not yours`
-          return [{ type: 'text', text: `${started}${skipped}\n\n${occupancy}` }]
+          const pendingForYou = value.unclaimed === 0 ? '' : ` — ${value.unclaimed} unread message(s) are yours: read them with member_inbox`
+          return [{ type: 'text', text: `${started}${skipped}${stuck}\n\n${occupancy}${pendingForYou}` }]
         },
       },
       async execute(args, exec) {
@@ -926,30 +968,54 @@ export function buildToolDefinitions(getApi) {
         }
         const dispatched = []
         const skipped = []
+        const stuck = []
         for (const [memberId, messages] of byMember) {
           const head = await journal.head(memberId)
           if (head !== undefined && head.phase === 'started') {
-            skipped.push({ member_id: memberId, reason: 'already running' })
+            skipped.push({ member_id: memberId, reason: 'already running; it reads its own inbox' })
             continue
           }
+          if (head !== undefined && head.phase === 'reserved') {
+            skipped.push({ member_id: memberId, reason: 'a generation is being prepared' })
+            continue
+          }
+          // Two dispatch calls can overlap; a member gets one new generation at a
+          // time so the same mail is not handed out twice.
+          if (!api.claimMember(memberId)) {
+            skipped.push({ member_id: memberId, reason: 'a dispatch is already starting a generation' })
+            continue
+          }
+          // A lease held by a generation that already ended is expired: that
+          // generation finished without reading, so the mail needs a new one.
           const lines = messages
             .map(message => `[${message.from.memberId ?? 'orchestrator'}#${message.from.generation ?? 0}${message.topic === undefined ? '' : ` ${message.topic}`}] ${message.body}`)
             .join('\n')
-          const task = `Mail from other members, newer than your last turn:\n${lines}\n\nHandle it and finish. This supersedes any inherited instruction that your work was done.`
+          const task = `Mail from other members, newer than your last turn:\n${lines}\n\nRead it with member_inbox, handle it, and finish. This supersedes any inherited instruction that your work was done.`
           try {
             const started = await api.rotate({ parent: exec.agent, memberId, prompt: task })
-            await mailServer.markDispatched(messages.map(message => message.id))
+            await mailServer.markDispatched(messages.map(message => message.id), started.childId)
             await journal.markAutoWake(started.childId, { memberId, reason: 'mailbox-dispatch' })
             dispatched.push({ member_id: memberId, generation: started.generation, child_id: started.childId, messages: messages.length })
           } catch (error) {
-            skipped.push({ member_id: memberId, reason: String(error?.message ?? error) })
+            // No generation exists for this mail, so report it instead of
+            // pretending it was handled; the message stays unread for a retry.
+            stuck.push({ member_id: memberId, reason: String(error?.message ?? error), messages: messages.length })
+          } finally {
+            api.releaseMember(memberId)
           }
         }
         const occupancy = await mailServer.inbox({
           reader: { childId: caller.childId, memberId: caller.memberId },
           ack: false,
         })
-        return { dispatched, skipped, total: occupancy.total, others: occupancy.others }
+        return {
+          dispatched,
+          skipped,
+          stuck,
+          unclaimed: occupancy.total - occupancy.others - occupancy.messages.length,
+          total: occupancy.total,
+          others: occupancy.others,
+        }
       },
     },
     {
