@@ -340,3 +340,24 @@ test('the first-turn nudge injects one snapshot message on turn 1 step 1', async
   const later = await listener({ agent: other, turn: 2, step: 1, signal: new AbortController().signal }, next)
   assert.equal(later.messages.length, 0)
 })
+
+test('every tool schema is self-consistent', () => {
+  const problems = []
+  const walk = (schema, path) => {
+    if (schema === null || typeof schema !== 'object') return
+    if (Array.isArray(schema.type)) problems.push(`${path}: type must be a single string`)
+    if (schema.type === 'object') {
+      const properties = schema.properties ?? {}
+      for (const name of schema.required ?? []) {
+        if (!(name in properties)) problems.push(`${path}: required "${name}" is not in properties`)
+      }
+      for (const [key, value] of Object.entries(properties)) walk(value, `${path}.${key}`)
+    }
+    if (schema.type === 'array') walk(schema.items, `${path}.items`)
+  }
+  for (const tool of buildToolDefinitions(() => ({}))) {
+    walk(tool.parameters, `${tool.name}.parameters`)
+    walk(tool.output.schema, `${tool.name}.output`)
+  }
+  assert.deepEqual(problems, [], 'the host rejects a schema whose required name has no property')
+})

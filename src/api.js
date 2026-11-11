@@ -908,6 +908,7 @@ export function buildToolDefinitions(getApi) {
                 type: 'object',
                 properties: {
                   member_id: { type: 'string' },
+                  state: { type: 'string' },
                 },
                 required: ['member_id', 'state'],
                 additionalProperties: false,
@@ -920,7 +921,7 @@ export function buildToolDefinitions(getApi) {
         render: (_args, value) => [{
           type: 'text',
           text: value.members.length === 0
-            ? '(no members yet; start one with seeded_fork)'
+            ? '(no members yet; start one with member_start)'
             : value.members.map(member => `- ${member.member_id} (${member.state})`).join('\n'),
         }],
       },
@@ -951,6 +952,7 @@ export function buildToolDefinitions(getApi) {
                 type: 'object',
                 properties: {
                   member_id: { type: 'string' },
+                  state: { type: 'string' },
                   messages: { type: 'number' },
                 },
                 required: ['member_id', 'state', 'messages'],
