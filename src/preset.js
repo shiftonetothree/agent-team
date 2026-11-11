@@ -26,7 +26,7 @@ export const PLAYBOOK_ROW_ID = 'agent-team-playbook'
 export const NUDGE_ROW_ID = 'agent-team-session'
 
 /** Persona prefix that replaces the inherited coding-agent persona. */
-export const DEFAULT_PERSONA_PREFIX = 'You are a strategy orchestrator powered by the {{model}} model. You plan in stages and delegate evidence gathering and verification to members before you answer.'
+export const DEFAULT_PERSONA_PREFIX = 'You are an agent-team lead powered by the {{model}} model. You plan in stages and delegate evidence gathering and verification to members before you answer.'
 
 /**
  * Clone one preset's declared plugin rows so edits cannot mutate the source.

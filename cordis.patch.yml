@@ -1,0 +1,18 @@
+# @commonworks/agent-team bundle layer.
+#
+# Installing this package into a profile mounts one host plugin: the seeded-fork
+# subagent backend, the seven member tools, and the `agent-team` agent preset.
+# Per-deployment values (state directory, provider name, wake budget) are defaults
+# here and can be overridden from the profile patch by entry id `agent-team`.
+- insert:
+    - id: agent-team
+      name: ./src/index.js
+      config:
+        registerTools: true
+        playbook: false
+        preset:
+          id: agent-team
+          name: 智能体团队
+          order: 7
+        autoWake:
+          maxPerMember: 2

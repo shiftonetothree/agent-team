@@ -336,3 +336,94 @@ test('the store lives in one .mail.json file per orchestrator session', async ()
   const files = await (await import('node:fs/promises')).readdir(dir)
   assert.deepEqual(files, ['session-abc.mail.json'])
 })
+
+test('mailbox counts include mail addressed to others, without exposing it', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const a = await api.fork({ parent, memberId: 'a', prompt: 'a' })
+  const b = await api.fork({ parent, memberId: 'b', prompt: 'b' })
+
+  await tools.get('member_post').execute(
+    { to_member: 'orchestrator', body: 'for the orchestrator only' },
+    { agent: { session: { id: a.childId } } },
+  )
+  await tools.get('member_post').execute(
+    { to_member: 'b', body: 'a message for b' },
+    { agent: { session: { id: a.childId } } },
+  )
+
+  const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(inbox.messages.length, 1, 'the orchestrator reads only its own mail')
+  assert.equal(inbox.total, 2, 'the server total counts every message')
+  assert.equal(inbox.others, 1, 'one message belongs to another mailbox')
+})
+
+test('member_dispatch starts a generation from the mail and does not repeat it', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  const produce = await api.fork({ parent, memberId: 'produce', prompt: 'produce' })
+  await produce.result
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  await tools.get('member_post').execute(
+    { to_member: 'produce', body: 'the handler at a.ts:31 is unguarded', topic: 'finding' },
+    { agent: { session: { id: audit.childId } } },
+  )
+
+  const first = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(first.dispatched.length, 1)
+  assert.equal(first.dispatched[0].member_id, 'produce')
+  assert.equal(first.dispatched[0].messages, 1)
+  assert.equal(first.dispatched[0].generation, 1, 'produce gained a generation for the mail')
+
+  const second = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.deepEqual(second.dispatched, [], 'a dispatched message is not dispatched twice')
+})
+
+test('member_dispatch leaves a running member to its own inbox', async () => {
+  const { parent, api, tools } = await wakeSetup({ deferResults: true, autoWake: false })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  const produce = await api.fork({ parent, memberId: 'produce', prompt: 'produce' })
+
+  await tools.get('member_post').execute(
+    { to_member: 'produce', body: 'while you work' },
+    { agent: { session: { id: audit.childId } } },
+  )
+  const result = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.deepEqual(result.dispatched, [])
+  assert.equal(result.skipped[0].member_id, 'produce')
+  assert.match(result.skipped[0].reason, /already running/u)
+  produce.activation.dispose()
+})
+
+test('member_dispatch is reserved for the orchestrator', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await assert.rejects(
+    () => tools.get('member_dispatch').execute({}, { agent: { session: { id: audit.childId } } }),
+    /reserved for the orchestrator/u,
+  )
+})
+
+test('a settled member appends the mailbox notice to the parent session', async () => {
+  const harness = await wakeSetup({ autoWake: false })
+  const { parent, api } = harness
+  const tools = harness.tools
+  /** @type {Array<{ type: string, message: any }>} */
+  const appended = []
+  parent.session.append = (type, message) => { appended.push({ type, message }) }
+
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  // Mail for the orchestrator that is still unread when audit settles.
+  await tools.get('member_post').execute(
+    { to_member: 'orchestrator', body: 'audit found an unguarded handler' },
+    { agent: { session: { id: audit.childId } } },
+  )
+  await audit.result
+  await new Promise(resolve => setTimeout(resolve, 30))
+
+  assert.equal(appended.length, 1, 'one notice per settlement with mail on the server')
+  assert.equal(appended[0].type, 'user/message')
+  assert.equal(appended[0].message.source.form, 'snapshot')
+  assert.match(appended[0].message.content[0].text, /mailbox server holds 1 message/u)
+  assert.match(appended[0].message.content[0].text, /member_dispatch/u)
+})

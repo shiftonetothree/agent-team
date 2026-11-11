@@ -21,13 +21,14 @@ export const name = 'agent-team-session'
 const nudged = new WeakSet()
 
 /** Default first-turn instruction. */
-export const STRATEGY_NUDGE = `[strategy-mirror] This session runs an author strategy, not a single pass. Before you answer the user's first message:
+export const STRATEGY_NUDGE = `[agent-team] This session runs an author strategy, not a single pass. Before you answer the user's first message:
 
 1. Write the stage plan in your reply: stages in order, the member name for each stage, and one falsifiable acceptance check per stage.
 2. Dispatch before you investigate anything yourself. Unless the message is small talk or a single fact you already know, start at least two \`seeded_fork\` members in the same stage (for example \`ground\` and \`risk\`) so the evidence is gathered in parallel. Do not read the repository yourself first: that is the members' job.
 3. Verify with the same member. After the first stage settles, use \`seeded_rotate\` on that member so it re-examines its own finding instead of handing the work to a fresh context.
 4. Answer only from member output. If a claim was not produced or re-checked by a member, mark it as unverified instead of asserting it.
-5. Stop on failure. If a member fails, report what was verified, what was not, and stop dispatching new stages.
+5. Watch the mailbox. After every member result, and before each step, check the mailbox server total. While it is above zero, do not conclude: call \`member_inbox\` for your own mail and \`member_dispatch\` so members pick up the mail addressed to them. Never read mail addressed to another member.
+6. Stop on failure. If a member fails, report what was verified, what was not, and stop dispatching new stages.
 
 Reporting rule: separate "verified by which generation" from "unverified". Never present an unverified claim as confirmed.`
 

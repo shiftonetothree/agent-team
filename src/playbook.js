@@ -35,7 +35,10 @@ Dispatch with the strategy tools:
 - \`seeded_chain\` lists a member's generations, their phase, and each predecessor.
 - \`member_roster\` lists the members this orchestration already started, with the exact ids to address.
 - \`member_post\` leaves a message for another member; the recipient reads it with \`member_inbox\`.
-- \`member_inbox\` reads the messages left for you. Check it before each step: a note addressed to your previous generation is still delivered to you until it is read.
+- \`member_inbox\` reads the messages left for you and reports how many messages the server holds in total, including mail addressed to others. Check it before each step: a note addressed to your previous generation is still delivered to you until it is read.
+- \`member_dispatch\` creates the generations the mailbox asks for: it groups unread mail by addressee and starts that member's next generation with the mail as its task.
+
+Mail is a second input channel, not a side channel. It reaches you two ways: your own \`member_inbox\` result, and the notice appended to this session when a member settles. Both report the server total. While that total is above zero, do not give the user a conclusion: call \`member_inbox\` for your own mail and \`member_dispatch\` for the mail addressed to members, then keep working. Never read mail addressed to another member; knowing that it exists is enough.
 
 Members cannot address each other directly, so a cross-member hand-off goes through the mail server or through the parent's next \`task\`. Prefer the mail server while two members are working at the same time; prefer \`seeded_rotate\` when the second member needs the first one's own history.
 
@@ -72,14 +75,14 @@ export function strategyPlaybookSection(options = {}) {
  *
  * @param {object} options
  * @param {string} options.specifier - module specifier of this plugin (use `import.meta.url`).
- * @param {string} [options.id] - preset id (default `strategy-mirror`).
+ * @param {string} [options.id] - preset id (default `agent-team`).
  * @param {string} [options.name] - display name.
  * @param {string} [options.description] - roster description.
  * @param {number} [options.order] - roster ordering.
  * @param {any} [options.config] - config passed to the nested instance.
  * @returns {any} a `PresetDefinition`.
  */
-export function strategyMirrorPreset({ specifier, id = 'strategy-mirror', name = 'Strategy mirror (agent-team)', description = 'Runs author strategies over seeded members: stage plan, parallel members, independent verification, repair.', order, config, ...nestedConfig }) {
+export function strategyMirrorPreset({ specifier, id = 'agent-team', name = '智能体团队', description = 'Runs author strategies over seeded members: stage plan, parallel members, independent verification, repair.', order, config, ...nestedConfig }) {
   return {
     id,
     name,

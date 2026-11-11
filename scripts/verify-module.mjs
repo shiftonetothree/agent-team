@@ -51,7 +51,7 @@ check('playbook section is placed after subagent guidance', () => {
 })
 check('preset mounts the entry with providers disabled', () => {
   const preset = playbook.strategyMirrorPreset({ specifier: 'file:///plugin/index.js' })
-  assert.equal(preset.id, 'strategy-mirror')
+  assert.equal(preset.id, 'agent-team')
   assert.equal(preset.plugins.length, 1)
   assert.equal(preset.plugins[0].config.provider, false)
   assert.equal(preset.plugins[0].config.registerTools, false)

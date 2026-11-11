@@ -187,6 +187,7 @@ export class MailServer {
   async inbox({ reader, limit = 20, ack = true, includeRead = false }) {
     return this.#serial(async () => {
       await this.#load()
+      const addressedToReader = message => reader.memberId !== undefined && message.toMember === reader.memberId
       const visible = this.#messages.filter(message => {
         if (reader.memberId !== undefined && message.toMember !== reader.memberId) return false
         if (reader.memberId === undefined && message.toMember !== undefined) return false
@@ -204,10 +205,55 @@ export class MailServer {
         }
         if (changed) await this.#persist()
       }
+      const yours = this.#messages.filter(addressedToReader).length
       return {
         messages: selected.map(message => ({ ...message, readers: [...message.readers] })),
         unacked: visible.filter(message => !message.readers.includes(reader.childId)).length,
+        // Board occupancy, not content: a reader may know that the server still
+        // holds mail without learning who wrote to whom.
+        total: this.#messages.length,
+        others: this.#messages.length - yours,
       }
+    })
+  }
+
+  /**
+   * Messages no member has been dispatched for yet, oldest first.
+   *
+   * The orchestrator uses this to decide which generations to create from the
+   * mail itself, instead of guessing from member state.
+   *
+   * @param {{ limit?: number, excluding?: string }} [options] - window and one
+   *   mailbox to skip (the orchestrator reads its own mail directly).
+   * @returns {Promise<any[]>}
+   */
+  async pending({ limit = 50, excluding } = {}) {
+    await this.#load()
+    return this.#messages
+      .filter(message => message.dispatchedAt === undefined
+        && message.readers.length === 0
+        && message.toMember !== excluding)
+      .slice(0, limit)
+      .map(message => ({ ...message, readers: [...message.readers] }))
+  }
+
+  /**
+   * Record that these messages now have a generation working on them.
+   * @param {string[]} ids - message ids.
+   * @returns {Promise<number>} how many messages changed.
+   */
+  async markDispatched(ids) {
+    return this.#serial(async () => {
+      await this.#load()
+      let changed = 0
+      for (const id of ids) {
+        const message = this.#messages.find(candidate => candidate.id === id)
+        if (message === undefined || message.dispatchedAt !== undefined) continue
+        message.dispatchedAt = Date.now()
+        changed += 1
+      }
+      if (changed > 0) await this.#persist()
+      return changed
     })
   }
 

@@ -145,7 +145,7 @@ test('tool definitions satisfy the registry contract', async () => {
   const { ctx } = fakeCtx()
   const api = createSeededFork(ctx, { directory: await mkdtemp(join(tmpdir(), 'agent-team-tools-')) })
   const definitions = buildToolDefinitions(() => api)
-  assert.deepEqual(definitions.map(definition => definition.name), ['seeded_fork', 'seeded_rotate', 'member_roster', 'member_post', 'member_inbox', 'seeded_preset_diagnose', 'seeded_chain'])
+  assert.deepEqual(definitions.map(definition => definition.name), ['seeded_fork', 'seeded_rotate', 'member_roster', 'member_dispatch', 'member_post', 'member_inbox', 'seeded_preset_diagnose', 'seeded_chain'])
 
   for (const definition of definitions) {
     assert.equal(typeof definition.description, 'string')
@@ -159,6 +159,7 @@ test('tool definitions satisfy the registry contract', async () => {
       seeded_fork: { childId: 'c-1', generation: 0, seedFrom: '', inheritedFrom: 'no predecessor, started fresh' },
       seeded_rotate: { childId: 'c-2', generation: 1, seedFrom: 'c-1', inheritedFrom: 'inherits c-1' },
       member_roster: { members: [] },
+      member_dispatch: { dispatched: [], skipped: [], total: 0, others: 0 },
       member_post: { message_id: 'm-1', to_member: 'reviewer' },
       member_inbox: { messages: [] },
       seeded_preset_diagnose: { json: '{}' },
@@ -187,7 +188,7 @@ test('tools register through ctx.tools when the composition provides them', asyn
     },
   }
   createSeededFork(ctx, { directory: dir })
-  assert.deepEqual(registered, ['seeded_fork', 'seeded_rotate', 'member_roster', 'member_post', 'member_inbox', 'seeded_preset_diagnose', 'seeded_chain'])
+  assert.deepEqual(registered, ['seeded_fork', 'seeded_rotate', 'member_roster', 'member_dispatch', 'member_post', 'member_inbox', 'seeded_preset_diagnose', 'seeded_chain'])
 
   const disabled = await mkdtemp(join(tmpdir(), 'agent-team-tools-'))
   const other = fakeCtx().ctx
@@ -275,10 +276,10 @@ test('preset registration clones the standard composition and inherits its rows'
       return async () => {}
     },
   }
-  const api = createSeededFork(ctx, { directory: dir, providerName: 'p-preset', preset: { id: 'strategy-mirror', order: 7 } })
+  const api = createSeededFork(ctx, { directory: dir, providerName: 'p-preset', preset: { id: 'agent-team', order: 7 } })
   const status = await api.presetDiagnose()
 
-  assert.deepEqual(status.registered, ['strategy-mirror'])
+  assert.deepEqual(status.registered, ['agent-team'])
   assert.equal(status.standardAvailable, true)
   assert.equal(registered.length, 1)
   const definition = registered[0]
@@ -287,7 +288,7 @@ test('preset registration clones the standard composition and inherits its rows'
   // appended: the playbook section and the first-turn nudge.
   assert.deepEqual(definition.plugins.slice(0, 2).map(row => row.id), ['persona', 'tools'])
   const persona = definition.plugins.find(row => row.id === 'persona')
-  assert.match(persona.config.prefix, /strategy orchestrator/u)
+  assert.match(persona.config.prefix, /agent-team lead/u)
   const ids = definition.plugins.map(row => row.id)
   assert.deepEqual(ids.slice(-2), ['agent-team-playbook', 'agent-team-session'])
   assert.match(definition.plugins.at(-2).name, /\/src\/preset-entry\.js$/u)

@@ -19,11 +19,11 @@
 # 前提是同一 profile 里已经有上面的 profile 级实例（它拥有 provider 与工具）。
 #
 # - insert:
-#     - id: preset-strategy-mirror
+#     - id: preset-agent-team
 #       name: '@deepseek-ai/dsh-agent-preset'
 #       config:
-#         id: strategy-mirror
-#         name: Strategy mirror (agent-team)
+#         id: agent-team
+#         name: 智能体团队
 #         description: Runs author strategies over seeded members.
 #         order: 7
 #         plugins:

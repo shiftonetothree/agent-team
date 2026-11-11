@@ -49,7 +49,39 @@ orchestrator plugin
 
 ## 3. 安装与配置
 
-### 作为插件
+### 从 npm 安装到 profile（推荐）
+
+```sh
+# CLI 管理的 profile（headless / web / 自建 profile）
+dsh plugin --profile <name> add @commonworks/agent-team
+```
+
+桌面版（desktop profile 由 Electron 管理，CLI 不能改）在 GUI 的 **Plugins** 页安装 `@commonworks/agent-team`。
+
+包内自带组合层（`dsh.bundle.patch` → `cordis.patch.yml`），安装后会自动挂载：subagent 后端、七个成员工具、以及名为 **智能体团队**（id `agent-team`）的 agent preset。per-deployment 参数（状态目录、provider 名、唤醒预算）可在 profile patch 里按条目 id `agent-team` 覆盖。
+
+> 注意：`headless` 组合没有 `agentPresets` 服务，因此该 profile 下 preset 不会出现（工具照常可用）；preset 只存在于 web / desktop 这类带预设注册表的组合里。插件会在启动日志里明确写出这一点。
+
+#### preset 不出现时怎么查
+
+插件在两种情况下会**直接打印**原因（不需要 debug 开关）：
+
+```
+agent-team: preset "agent-team" was requested but this composition has no agentPresets service; …
+agent-team: preset "agent-team" was not registered: <原因>
+```
+
+按顺序核对：
+
+| 检查 | 命令 / 位置 | 期望 |
+|---|---|---|
+| 装的是 0.1.2+ | `npm view @commonworks/agent-team version` | `0.1.3` 或更高（0.1.0/0.1.1 缺 `dsh.bundle`，0.1.1 还带 BOM） |
+| 确实装进了 profile | `~/.dsh/profiles/<名>/node_modules/@commonworks/agent-team/package.json` | 文件存在且 `version` 匹配 |
+| 组合里挂上了 | `dsh --profile <名> --dump-config`（GUI 管理的 desktop 用 GUI 看） | 有 `id: agent-team` 条目 |
+| 组合带预设注册表 | 启动日志 | 出现 `agent-team: presets registered=[agent-team]`（需 `DSH_AGENT_TEAM_DEBUG=1`）或没有任何 agent-team 报错 |
+| 装完重启过 | — | ESM 模块缓存不会热更新；装包后必须重启客户端，再开**新会话** |
+
+### 手工挂载（file: 插件，源码工作区）
 
 ```yaml
 - insert:
@@ -64,8 +96,8 @@ orchestrator plugin
         registerTools: true
         playbook: false            # 手册只由 preset 携带
         preset:
-          id: strategy-mirror
-          name: Strategy mirror (agent-team)
+          id: agent-team
+          name: 智能体团队
           order: 7
         autoWake: { maxPerMember: 2 }   # 关闭用 autoWake: false
 ```
@@ -95,8 +127,9 @@ const g2 = await team.rotate({ parent: agent, memberId: 'audit', prompt: '复核
 | `seeded_rotate` | 起该成员下一代，继承最新**已完成**的一代（未落定会等；跨进程明确报错） |
 | `seeded_chain` | 列出世代、相位、前任 |
 | `member_roster` | 列出本编排已登记的成员（含 `orchestrator` 地址） |
+| `member_dispatch` | 按信箱内容按需造转世：把未读邮件按收件人分组，给每个收件成员起下一代（正在跑的跳过） |
 | `member_post` | 给某成员或 `orchestrator` 投信；目标还不存在时返回 warning 但不丢消息；目标已终止时自动转世 |
-| `member_inbox` | 读写给**自己地址**的邮件（默认读完即消费） |
+| `member_inbox` | 读写给**自己地址**的邮件（默认读完即消费），并报告**服务器总量**与其中"不是给自己的"条数 |
 | `seeded_preset_diagnose` | 报告 preset 注册结果、错误、`standard` 是否可用 |
 
 ## 5. preset 与提示层
@@ -121,6 +154,7 @@ preset 的注册方式：**等 `standard` 出现 → 克隆它的插件行 → �
 - **跨代携带**：只写 `to_member` 时，任一代都能读到，直到被某次读取消费。写 `to_generation: N` 则只有第 N 代可见。
 - **编排者也是信箱**：保留地址 `orchestrator`，成员可以给它投信；它没有总览权（全量读取的方法不存在），只能读到写给自己的邮件。
 - **非成员子会话**（例如用 DSH 原生 `subagent` 工具起的）查信箱返回空。
+- **服务器总量可见、内容不可见**：`member_inbox` 除了返回自己的邮件，还返回 `total`（服务器上的全部条数）与 `others`（其中不是给自己的条数）。知道"还有信"是必要的，"读别人的信"仍然不允许。
 - **每步轮询**靠 `fork`/`rotate` 拼在任务前的 preamble：
 
 ```
@@ -129,6 +163,27 @@ Before each step, call member_inbox ... To reach another member, call member_ros
 ```
 
 子 agent 的轮次里没有可挂钩的插件事件，所以这是能做到的最强约束（提示 + 工具描述 + playbook）。
+
+#### 信箱不空时：按邮件造转世
+
+主 agent 收信有**两条渠道**，两条都会报服务器总量：
+
+| 渠道 | 触发 | 带上来的信息 |
+|---|---|---|
+| `member_inbox` 工具结果 | 主动轮询 | 自己的邮件 + `total` / `others` |
+| 结算通知 | 某个成员上一代结算时，插件向父会话追加一条 snapshot 用户消息 | `total` / `others`（保证"收到子 agent 结果"这一刻就能看到） |
+
+总量大于 0 时，主 agent **不给结论**，而是调用 `member_dispatch`：
+
+```
+member_dispatch()
+  ├─ 取服务器上所有未读、未派发、收件人是成员的邮件
+  ├─ 按收件人分组
+  ├─ 收件成员正在跑 → 跳过（它这一轮会自己读）
+  └─ 否则 rotate(该成员)，task 直接是这封邮件 → 新代读信并处理
+```
+
+派发过的邮件会打上 `dispatchedAt`，所以第二次调用不会重复造代；发给 `orchestrator` 的邮件不由它派发（那是主 agent 自己用 `member_inbox` 读的）。`member_dispatch` 只允许编排者调用。
 
 真机验证（headless）：
 
@@ -184,7 +239,7 @@ src/preset-entry.js   preset 作用域里的手册 section
 src/preset-session.js preset 作用域里的首轮提示
 src/index.js          cordis 函数插件入口（name/inject/apply，无 default export）
 scripts/              verify-module.mjs 契约自检 / demo.mjs 假 host 演示 / inspect-session.mjs 解码会话
-profile/              独立 profile 挂载配方（已实测）
+cordis.patch.yml      包内组合层（dsh.bundle.patch），安装即挂载\nprofile/              独立 profile 挂载配方（已实测）
 tests/                64 项 node:test
 ```
 
@@ -209,7 +264,7 @@ node scripts/demo.mjs            # 假 host 的 fork → rotate → rotate 演�
 | 成员投信 | `member_post → seeded_fork`；成员读到邮件并按内容作答 |
 | 编排者信箱 | 成员给 `orchestrator` 投信，编排者只读到写给自己的 1 条；其他成员读不到 |
 | 自动唤醒 | audit gen0 结算 → producer 投信 → audit gen1 以 `auto-wake` 记录被创建并读取 |
-| preset 注册 | `agent-team: presets registered=[strategy-mirror] errors=[]` |
+| preset 注册 | `agent-team: presets registered=[agent-team] errors=[]` |
 | 手册落 prompt | 会话解码：`systemMessages=1`，含 `## Author strategy (agent-team)` |
 
 ## 10. 真机跑出来、单测跑不出来的缺陷（均已修复）

@@ -27,6 +27,7 @@ import { SeededForkProvider } from './provider.js'
 import { strategyPlaybookSection } from './playbook.js'
 import { registerStrategyPreset } from './preset.js'
 import { MailServer } from './mailserver.js'
+import { appendMailboxNotice } from './mailbox-notice.js'
 
 /** Address of the orchestrating agent's own mailbox. */
 export const ORCHESTRATOR_MEMBER_ID = 'orchestrator'
@@ -292,6 +293,7 @@ export function createSeededFork(ctx, config = {}) {
   }
   if (presetConfig !== undefined && presetConfig !== false) {
     const agentPresets = ctx?.get?.('agentPresets')
+    const presetId = presetConfig.id ?? 'agent-team'
     if (typeof agentPresets?.register !== 'function') {
       presetStatus = Promise.resolve({
         registered: [],
@@ -301,7 +303,7 @@ export function createSeededFork(ctx, config = {}) {
     } else {
       // Best-effort and asynchronous: `standard` may register after this plugin.
       presetStatus = registerStrategyPreset(agentPresets, {
-        id: presetConfig.id ?? 'strategy-mirror',
+        id: presetId,
         name: presetConfig.name,
         description: presetConfig.description,
         order: presetConfig.order,
@@ -406,6 +408,20 @@ export function createSeededFork(ctx, config = {}) {
   }
 
   /**
+   * Occupancy of the board the parent reads, from the parent's own mailbox.
+   * @param {any} parent - the orchestrating agent.
+   * @returns {Promise<{ total: number, yours: number, others: number }>}
+   */
+  async function mailboxCountsFor(parent) {
+    const mailServer = mailServerForSession(parent.session.id)
+    const result = await mailServer.inbox({
+      reader: { childId: parent.session.id, memberId: ORCHESTRATOR_MEMBER_ID },
+      ack: false,
+    })
+    return { total: result.total, yours: result.total - result.others, others: result.others }
+  }
+
+  /**
    * Reserve one generation for a member and start its child session.
    * @param {object} options - fork options.
    * @returns {Promise<any>} `{ childId, generation, activation, result }`.
@@ -452,6 +468,18 @@ export function createSeededFork(ctx, config = {}) {
       failure => journal.markFailed(reservation.childId, failure).catch(() => {}),
     )
     pendingResults.set(reservation.childId, journaled.finally(() => pendingResults.delete(reservation.childId)))
+    if (config.mailboxNotice !== false) {
+      // Second channel: the settled member's result reaches the parent on its own,
+      // so the occupancy notice rides right behind it.
+      void journaled.then(async () => {
+        try {
+          const counts = await mailboxCountsFor(parent)
+          appendMailboxNotice(parent, counts)
+        } catch {
+          // Occupancy is advisory; a failed read must not surface as a fork failure.
+        }
+      })
+    }
     return {
       childId: reservation.childId,
       generation: reservation.generation,
@@ -597,6 +625,7 @@ export function createSeededFork(ctx, config = {}) {
     presetDiagnose,
     resolveCaller,
     wakeIfTerminal,
+    orchestratorId: ORCHESTRATOR_MEMBER_ID,
     memberRoster,
     mailServerForSession,
     journalForSession: sessionId => registry.journalForSession(sessionId),
@@ -767,6 +796,105 @@ export function buildToolDefinitions(getApi) {
       },
     },
     {
+      name: 'member_dispatch',
+      description: 'Create the member generations that the mailbox asks for. Call it instead of answering the user while the server is not empty: it reads every unread message addressed to a member, groups them by addressee, and starts that member\'s next generation with the mail as its task. Members already running are skipped because they read their own inbox. Messages addressed to the orchestrator are left to member_inbox.',
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Maximum messages to consider. Defaults to 20.' },
+        },
+        additionalProperties: false,
+      },
+      output: {
+        schema: {
+          type: 'object',
+          properties: {
+            dispatched: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  member_id: { type: 'string' },
+                  generation: { type: 'number' },
+                  child_id: { type: 'string' },
+                  messages: { type: 'number' },
+                },
+                required: ['member_id', 'generation', 'child_id', 'messages'],
+                additionalProperties: false,
+              },
+            },
+            skipped: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { member_id: { type: 'string' }, reason: { type: 'string' } },
+                required: ['member_id', 'reason'],
+                additionalProperties: false,
+              },
+            },
+            total: { type: 'number' },
+            others: { type: 'number' },
+          },
+          required: ['dispatched', 'skipped', 'total', 'others'],
+          additionalProperties: false,
+        },
+        render: (_args, value) => {
+          const started = value.dispatched.length === 0
+            ? '(no generation was needed)'
+            : value.dispatched
+              .map(row => `- ${row.member_id} generation ${row.generation} started for ${row.messages} message(s) (child ${row.child_id})`)
+              .join('\n')
+          const skipped = value.skipped.length === 0
+            ? ''
+            : `\nskipped: ${value.skipped.map(row => `${row.member_id} (${row.reason})`).join(', ')}`
+          const occupancy = value.total === 0 ? 'mailbox: empty' : `mailbox: ${value.total} in total, ${value.others} not yours`
+          return [{ type: 'text', text: `${started}${skipped}\n\n${occupancy}` }]
+        },
+      },
+      async execute(args, exec) {
+        const api = getApi()
+        const caller = await api.resolveCaller(exec)
+        if (caller.memberId !== api.orchestratorId) throw new Error('member_dispatch is reserved for the orchestrator')
+        const sessionId = exec.agent.session.id
+        const journal = api.journalForSession(sessionId)
+        const mailServer = caller.mailServer ?? api.mailServerForSession(sessionId)
+        const pending = await mailServer.pending({ limit: args.limit ?? 20, excluding: api.orchestratorId })
+        /** @type {Map<string, any[]>} */
+        const byMember = new Map()
+        for (const message of pending) {
+          const list = byMember.get(message.toMember) ?? []
+          list.push(message)
+          byMember.set(message.toMember, list)
+        }
+        const dispatched = []
+        const skipped = []
+        for (const [memberId, messages] of byMember) {
+          const head = await journal.head(memberId)
+          if (head !== undefined && head.phase === 'started') {
+            skipped.push({ member_id: memberId, reason: 'already running' })
+            continue
+          }
+          const lines = messages
+            .map(message => `[${message.from.memberId ?? 'orchestrator'}#${message.from.generation ?? 0}${message.topic === undefined ? '' : ` ${message.topic}`}] ${message.body}`)
+            .join('\n')
+          const task = `Mail from other members, newer than your last turn:\n${lines}\n\nHandle it and finish. This supersedes any inherited instruction that your work was done.`
+          try {
+            const started = await api.rotate({ parent: exec.agent, memberId, prompt: task })
+            await mailServer.markDispatched(messages.map(message => message.id))
+            await journal.markAutoWake(started.childId, { memberId, reason: 'mailbox-dispatch' })
+            dispatched.push({ member_id: memberId, generation: started.generation, child_id: started.childId, messages: messages.length })
+          } catch (error) {
+            skipped.push({ member_id: memberId, reason: String(error?.message ?? error) })
+          }
+        }
+        const occupancy = await mailServer.inbox({
+          reader: { childId: caller.childId, memberId: caller.memberId },
+          ack: false,
+        })
+        return { dispatched, skipped, total: occupancy.total, others: occupancy.others }
+      },
+    },
+    {
       name: 'member_post',
       description: 'Leave a message for another member. The recipient reads it with member_inbox; omit to_generation so any later generation of that member still receives it. If the target already finished, the plugin starts its next generation automatically so the message is actually read.',
       parameters: {
@@ -835,7 +963,7 @@ export function buildToolDefinitions(getApi) {
     },
     {
       name: 'member_inbox',
-      description: 'Read messages left for you by other members. Call it before each step: a note addressed to your previous generation is still delivered to you until it is read. Reading consumes the message for you only.',
+      description: 'Read messages left for you by other members. Call it after every member result and before each step: a note addressed to your previous generation is still delivered to you until it is read. Reading consumes the message for you only. The result also reports how many messages the server holds in total, including mail addressed to others; while that total is above zero, keep working instead of finishing.',
       parameters: {
         type: 'object',
         properties: {
@@ -865,16 +993,22 @@ export function buildToolDefinitions(getApi) {
                 additionalProperties: false,
               },
             },
+            total: { type: 'number' },
+            others: { type: 'number' },
           },
-          required: ['messages'],
+          required: ['messages', 'total', 'others'],
           additionalProperties: false,
         },
-        render: (_args, value) => [{
-          type: 'text',
-          text: value.messages.length === 0
-            ? '(no new messages)'
-            : value.messages.map(message => `[${message.from_member}#${message.from_generation}${message.topic === '' ? '' : ` ${message.topic}`}] ${message.body}`).join('\n\n'),
-        }],
+        render: (_args, value) => {
+          const body = value.messages.length === 0
+            ? '(no new messages for you)'
+            : value.messages.map(message => `[${message.from_member}#${message.from_generation}${message.topic === '' ? '' : ` ${message.topic}`}] ${message.body}`).join('\n\n')
+          const occupancy = value.total === 0
+            ? 'mailbox: empty'
+            : `mailbox: ${value.total} in total, ${value.others} addressed to others`
+          const rule = value.total === 0 ? '' : ' — while the server is not empty, call member_dispatch for mail addressed to others instead of concluding; do not read it'
+          return [{ type: 'text', text: `${body}\n\n${occupancy}${rule}` }]
+        },
       },
       async execute(args, exec) {
         const api = getApi()
@@ -883,7 +1017,7 @@ export function buildToolDefinitions(getApi) {
         // Only a known mailbox reads: a member generation, or the orchestrator's
         // own address. A child this plugin never reserved gets nothing 鈥?the inbox
         // is point-to-point, never a broadcast channel.
-        if (caller.memberId === undefined) return { messages: [] }
+        if (caller.memberId === undefined) return { messages: [], total: 0, others: 0 }
         const result = await mailServer.inbox({
           reader: { childId: caller.childId, memberId: caller.memberId, generation: caller.generation },
           limit: args.limit,
@@ -899,6 +1033,8 @@ export function buildToolDefinitions(getApi) {
             body: message.body,
             at: message.at,
           })),
+          total: result.total,
+          others: result.others,
         }
       },
     },
