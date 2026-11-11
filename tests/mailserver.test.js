@@ -149,7 +149,7 @@ test('the child preamble names the member and generation and is not duplicated',
   assert.match(second[0].text, /generation 1/u)
 })
 
-test('posting to an unknown member warns instead of losing the message', async () => {
+test('posting to an unknown member is rejected', async () => {
   const dir = await tempDir()
   const parent = { session: fakeSession('parent-mail3', []) }
   const { ctx, sessions } = fakeCtx()
@@ -157,19 +157,29 @@ test('posting to an unknown member warns instead of losing the message', async (
   const api = createSeededFork(ctx, { directory: dir, providerName: 'p-mail3' })
   const tools = new Map(buildToolDefinitions(() => api).map(definition => [definition.name, definition]))
 
-  // A brief written before the member starts is legitimate: warn, keep the message.
-  const posted = await tools.get('member_post').execute(
-    { to_member: 'not-yet-started', body: 'read this first' },
-    { agent: { session: { id: 'parent-mail3' } } },
+  await assert.rejects(
+    () => tools.get('member_post').execute(
+      { to_member: 'not-yet-started', body: 'read this first' },
+      { agent: { session: { id: 'parent-mail3' } } },
+    ),
+    /unknown member "not-yet-started"/u,
   )
-  assert.match(posted.warning, /no member "not-yet-started" exists yet/u)
 
   const known = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
   const accepted = await tools.get('member_post').execute(
     { to_member: 'audit', body: 'now it exists' },
     { agent: { session: { id: known.childId } } },
   )
-  assert.equal(accepted.warning, undefined)
+  assert.equal(accepted.to_member, 'audit')
+
+  // A generation that does not exist yet cannot receive mail either.
+  await assert.rejects(
+    () => tools.get('member_post').execute(
+      { to_member: 'audit', to_generation: 7, body: 'for a generation that may never exist' },
+      { agent: { session: { id: 'parent-mail3' } } },
+    ),
+    /unknown generation 7/u,
+  )
 })
 
 async function wakeSetup({ autoWake, mailRetry, deferResults = false } = {}) {
@@ -502,11 +512,13 @@ test('mail whose generation finished without reading is handed to the next one',
 
 test('mail addressed to a member that does not exist yet creates that member', async () => {
   const { parent, api, tools } = await wakeSetup({ autoWake: false })
-  // Posting before the member exists is the documented brief-first flow.
-  await tools.get('member_post').execute(
-    { to_member: 'review', body: 'start by reading the config' },
-    { agent: { session: { id: 'parent-wake' } } },
-  )
+  // Mail that reached the store without a member behind it (written before this
+  // rule, or by another tool) still gets a member on demand.
+  await api.mailServerForSession('parent-wake').post({
+    from: { childId: 'legacy', memberId: 'orchestrator', generation: 0 },
+    toMember: 'review',
+    body: 'start by reading the config',
+  })
   const result = await tools.get('member_dispatch').execute({}, { agent: { session: { id: 'parent-wake' } } })
   assert.equal(result.dispatched.length, 1)
   assert.equal(result.dispatched[0].member_id, 'review')

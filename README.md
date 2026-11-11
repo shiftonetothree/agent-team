@@ -128,7 +128,7 @@ const g2 = await team.rotate({ parent: agent, memberId: 'audit', prompt: '复核
 | `seeded_chain` | 列出世代、相位、前任 |
 | `member_roster` | 列出本编排已登记的成员（含 `orchestrator` 地址） |
 | `member_dispatch` | 按信箱内容按需造转世：把未读邮件按收件人分组，给每个收件成员起下一代（正在跑的跳过） |
-| `member_post` | 给某成员或 `orchestrator` 投信；目标还不存在时返回 warning 但不丢消息；目标已终止时自动转世 |
+| `member_post` | 给某成员或 `orchestrator` 投信；**目标必须已存在**（未启动的 id 直接拒绝），`to_generation` 必须是已存在的代；目标已终止时自动转世 |
 | `member_inbox` | 读写给**自己地址**的邮件（默认读完即消费），并报告**服务器总量**与其中"不是给自己的"条数 |
 | `seeded_preset_diagnose` | 报告 preset 注册结果、错误、`standard` 是否可用 |
 
@@ -171,7 +171,7 @@ Before each step, call member_inbox ... To reach another member, call member_ros
 
 | 情况 | 现在的行为 |
 |---|---|
-| 收件成员不存在（给还没创建的成员写信） | 派发时**按需创建**该成员（generation 0） |
+| 收件成员不存在（历史遗留或外部写入的信） | 派发时**按需创建**该成员（generation 0）；新写入已被 `member_post` 的校验挡住 |
 | 收件成员正在跑 | 跳过，它这一轮会自己读 |
 | 派发出的那一代结算了却没读 | 租约过期，下次 `member_dispatch` 会为新的一代重新派发 |
 | 该成员达代数上限 / 创建失败 | 进 `stuck`（带原因与未读数），邮件保持未读，不假装处理过 |

@@ -1075,14 +1075,14 @@ export function buildToolDefinitions(getApi) {
     },
     {
       name: 'member_post',
-      description: 'Leave a message for another member. The recipient reads it with member_inbox; omit to_generation so any later generation of that member still receives it. If the target already finished, the plugin starts its next generation automatically so the message is actually read.',
+      description: 'Leave a message for another member. The recipient reads it with member_inbox; omit to_generation so any later generation of that member still receives it. If the target already finished, the plugin starts its next generation automatically so the message is actually read. The target must already exist: start the member with seeded_fork before writing to it.',
       parameters: {
         type: 'object',
         properties: {
           to_member: { type: 'string', description: 'Target member id from member_roster.' },
           body: { type: 'string', description: 'The message. State the ask and what you already verified.' },
           topic: { type: 'string', description: 'Optional short label shown in the inbox list.' },
-          to_generation: { type: 'number', description: 'Optional exact generation; omit to reach whichever generation reads it next.' },
+          to_generation: { type: 'number', description: 'Optional exact existing generation of the target; omit to reach whichever generation reads it next.' },
         },
         required: ['to_member', 'body'],
         additionalProperties: false,
@@ -1093,7 +1093,6 @@ export function buildToolDefinitions(getApi) {
           properties: {
             message_id: { type: 'string' },
             to_member: { type: 'string' },
-            warning: { type: 'string' },
             wake: { type: 'string' },
           },
           required: ['message_id', 'to_member', 'wake'],
@@ -1101,8 +1100,7 @@ export function buildToolDefinitions(getApi) {
         },
         render: (_args, value) => [{
           type: 'text',
-          text: `message ${value.message_id} queued for ${value.to_member}; ${value.wake}`
-            + (value.warning === undefined ? '' : ` (warning: ${value.warning})`),
+          text: `message ${value.message_id} queued for ${value.to_member}; ${value.wake}`,
         }],
       },
       async execute(args, exec) {
@@ -1111,7 +1109,18 @@ export function buildToolDefinitions(getApi) {
         const mailServer = caller.mailServer ?? api.mailServerForSession(exec.agent.session.id)
         const journal = caller.journal ?? api.journalForSession(exec.agent.session.id)
         const roster = await api.memberRoster(journal)
-        const known = roster.some(member => member.member_id === args.to_member)
+        if (!roster.some(member => member.member_id === args.to_member)) {
+          const known = roster.map(member => member.member_id).join(', ') || 'none'
+          throw new Error(`unknown member "${args.to_member}" (known: ${known}); start it with seeded_fork, or post to "orchestrator"`)
+        }
+        if (args.to_generation !== undefined) {
+          const head = await journal.head(args.to_member)
+          const newest = head?.generation ?? 0
+          if (!Number.isInteger(args.to_generation) || args.to_generation < 0 || args.to_generation > newest) {
+            throw new Error(`unknown generation ${args.to_generation} of member "${args.to_member}" (exists: 0..${newest}); `
+              + 'omit to_generation to reach whichever generation reads it next')
+          }
+        }
         const message = await mailServer.post({
           from: { childId: caller.childId, memberId: caller.memberId, generation: caller.generation },
           toMember: args.to_member,
@@ -1119,12 +1128,6 @@ export function buildToolDefinitions(getApi) {
           body: args.body,
           topic: args.topic,
         })
-        // A brief for a member that has not started yet is legitimate, so an
-        // unknown target warns instead of failing; a typo then shows up in the
-        // result rather than in a board nobody reads.
-        const warning = known
-          ? undefined
-          : `no member "${args.to_member}" exists yet (known: ${roster.map(member => member.member_id).join(', ') || 'none'}); start it with seeded_fork or fix the id`
         // A finished member has no live runtime, so a message for it would sit
         // unread forever. Wake it now, before returning, so the caller learns
         // whether the message will actually be handled.
@@ -1132,7 +1135,6 @@ export function buildToolDefinitions(getApi) {
         return {
           message_id: message.id,
           to_member: message.toMember,
-          ...(warning === undefined ? {} : { warning }),
           wake: wake.woken
             ? `started the next generation (${wake.childId}) to read it`
             : (wake.reason === 'running' ? 'member is still running; it will read the message in this turn'
