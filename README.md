@@ -128,7 +128,7 @@ const g2 = await team.rotate({ parent: agent, memberId: 'audit', prompt: '复核
 | `seeded_chain` | 列出世代、相位、前任 |
 | `member_roster` | 列出本编排已登记的成员（含 `orchestrator` 地址） |
 | `member_dispatch` | 按信箱内容按需造转世：把未读邮件按收件人分组，给每个收件成员起下一代（正在跑的跳过） |
-| `member_post` | 给某成员或 `orchestrator` 投信；**目标必须已存在**（未启动的 id 直接拒绝），`to_generation` 必须是已存在的代；目标已终止时自动转世 |
+| `member_post` | 给某成员或 `orchestrator` 投信；**目标必须已存在**（未启动的 id 直接拒绝）；目标已终止时自动转世 |
 | `member_inbox` | 读写给**自己地址**的邮件（默认读完即消费），并报告**服务器总量**与其中"不是给自己的"条数 |
 | `seeded_preset_diagnose` | 报告 preset 注册结果、错误、`standard` 是否可用 |
 
@@ -151,7 +151,7 @@ preset 的注册方式：**等 `standard` 出现 → 克隆它的插件行 → �
 兄弟之间没有传输通道，所以走**邮箱服务器**：每个编排会话一个 `<sessionId>.mail.json`（与账本同目录，原子写 + EPERM 重试），每个参与者各有一个信箱。
 
 - **点对点**：过滤只按收件人比对（`toMember === reader.memberId`）。a 发给 b 的邮件，c 查信箱时看不到；c 的查询也不会消费 b 的邮件（消费按 reader 的 `childId` 记账）。
-- **信箱属于成员，不属于某一世**：`member_inbox` 默认返回该成员的**整份信箱**，其中上一代已经处理过的标注 `state: "handled-earlier"`；新一代不会看到"空信箱"。读取仍按 reader 消费（同一代不重复看到），`to_generation: N` 则只有第 N 代可见。
+- **信箱属于成员，不属于某一世**：`member_inbox` 默认返回该成员的**整份信箱**，其中上一代已经处理过的标注 `state: "handled-earlier"`；新一代不会看到"空信箱"。读取按 reader 记账（同一代不重复看到），**邮件不区分代次**——它属于成员，谁在跑就谁读。
 - **坏文件不覆盖**：存储无法解析时，先把原文件改名为 `<file>.corrupt-<时间戳>` 再写新文件，避免"解析失败 → 写成空表 → 邮箱被清空"。
 - **编排者也是信箱**：保留地址 `orchestrator`，成员可以给它投信；它没有总览权（全量读取的方法不存在），只能读到写给自己的邮件。
 - **非成员子会话**（例如用 DSH 原生 `subagent` 工具起的）查信箱返回空。

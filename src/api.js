@@ -1075,14 +1075,13 @@ export function buildToolDefinitions(getApi) {
     },
     {
       name: 'member_post',
-      description: 'Leave a message for another member. The recipient reads it with member_inbox; omit to_generation so any later generation of that member still receives it. If the target already finished, the plugin starts its next generation automatically so the message is actually read. The target must already exist: start the member with seeded_fork before writing to it.',
+      description: 'Leave a message for another member. The recipient reads it with member_inbox; mail belongs to the member, not to one generation, so whichever generation runs next reads it. If the target already finished, the plugin starts its next generation automatically so the message is actually read. The target must already exist: start the member with seeded_fork before writing to it.',
       parameters: {
         type: 'object',
         properties: {
           to_member: { type: 'string', description: 'Target member id from member_roster.' },
           body: { type: 'string', description: 'The message. State the ask and what you already verified.' },
           topic: { type: 'string', description: 'Optional short label shown in the inbox list.' },
-          to_generation: { type: 'number', description: 'Optional exact existing generation of the target; omit to reach whichever generation reads it next.' },
         },
         required: ['to_member', 'body'],
         additionalProperties: false,
@@ -1113,18 +1112,9 @@ export function buildToolDefinitions(getApi) {
           const known = roster.map(member => member.member_id).join(', ') || 'none'
           throw new Error(`unknown member "${args.to_member}" (known: ${known}); start it with seeded_fork, or post to "orchestrator"`)
         }
-        if (args.to_generation !== undefined) {
-          const head = await journal.head(args.to_member)
-          const newest = head?.generation ?? 0
-          if (!Number.isInteger(args.to_generation) || args.to_generation < 0 || args.to_generation > newest) {
-            throw new Error(`unknown generation ${args.to_generation} of member "${args.to_member}" (exists: 0..${newest}); `
-              + 'omit to_generation to reach whichever generation reads it next')
-          }
-        }
         const message = await mailServer.post({
           from: { childId: caller.childId, memberId: caller.memberId, generation: caller.generation },
           toMember: args.to_member,
-          toGeneration: args.to_generation,
           body: args.body,
           topic: args.topic,
         })

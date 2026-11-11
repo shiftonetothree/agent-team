@@ -47,21 +47,6 @@ test('an unread note to the previous generation reaches the next generation', as
   assert.equal(next.messages[0].body, 'check the second handler too')
 })
 
-test('an explicitly addressed generation is invisible to later ones', async () => {
-  const box = new MailServer({ sessionId: 's1', dir: await tempDir() })
-  await box.post({
-    from: { childId: 'c-a', memberId: 'audit', generation: 0 },
-    toMember: 'reviewer',
-    toGeneration: 0,
-    body: 'only generation 0 should act on this',
-  })
-
-  const gen0 = await box.inbox({ reader: { childId: 'c-b0', memberId: 'reviewer', generation: 0 } })
-  assert.equal(gen0.messages.length, 1)
-  const gen1 = await box.inbox({ reader: { childId: 'c-b1', memberId: 'reviewer', generation: 1 } })
-  assert.equal(gen1.messages.length, 0)
-})
-
 test('another member never sees a message addressed to someone else', async () => {
   const box = new MailServer({ sessionId: 's1', dir: await tempDir() })
   await box.post({ from: { childId: 'c-a', memberId: 'audit', generation: 0 }, toMember: 'produce', body: 'for produce only' })
@@ -172,14 +157,7 @@ test('posting to an unknown member is rejected', async () => {
   )
   assert.equal(accepted.to_member, 'audit')
 
-  // A generation that does not exist yet cannot receive mail either.
-  await assert.rejects(
-    () => tools.get('member_post').execute(
-      { to_member: 'audit', to_generation: 7, body: 'for a generation that may never exist' },
-      { agent: { session: { id: 'parent-mail3' } } },
-    ),
-    /unknown generation 7/u,
-  )
+
 })
 
 async function wakeSetup({ autoWake, mailRetry, deferResults = false } = {}) {

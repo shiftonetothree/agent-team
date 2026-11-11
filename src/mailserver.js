@@ -165,12 +165,11 @@ export class MailServer {
    * @param {object} request
    * @param {{ childId: string, memberId?: string, generation?: number }} request.from - sender identity.
    * @param {string} request.toMember - target member id.
-   * @param {number} [request.toGeneration] - target generation, or omitted for any.
    * @param {string} request.body - the message text.
    * @param {string} [request.topic] - short label shown in the inbox list.
    * @returns {Promise<any>} the committed message.
    */
-  async post({ from, toMember, toGeneration, body, topic }) {
+  async post({ from, toMember, body, topic }) {
     if (typeof toMember !== 'string' || toMember.length === 0) throw new Error('post requires toMember')
     if (typeof body !== 'string' || body.trim().length === 0) throw new Error('post requires a non-empty body')
     return this.#serial(async () => {
@@ -180,7 +179,6 @@ export class MailServer {
         at: Date.now(),
         from: { ...from },
         toMember,
-        ...(toGeneration === undefined ? {} : { toGeneration }),
         ...(topic === undefined ? {} : { topic }),
         body,
         readers: [],
@@ -210,7 +208,6 @@ export class MailServer {
       const visible = this.#messages.filter(message => {
         if (reader.memberId !== undefined && message.toMember !== reader.memberId) return false
         if (reader.memberId === undefined && message.toMember !== undefined) return false
-        if (message.toGeneration !== undefined && message.toGeneration !== reader.generation) return false
         return includeRead || !message.readers.includes(reader.childId)
       })
       const selected = visible.slice(-limit)
