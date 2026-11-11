@@ -1,0 +1,35 @@
+# @commonworks/agent-team 插件的最小挂载：只注册 subagent 后端与三个工具，不注册 preset。
+#
+# 策略手册（playbook）默认关闭。想让所有会话都带手册，把 playbook 改成 true；
+# 想只让某个 preset 带手册，用下面注释掉的那段静态声明，不要用 config.preset
+# （代码注册 preset 在激活失败时会在预设列表里留下不可用的一行，进而破坏新建会话）。
+- insert:
+    - id: agent-team
+      name: file:///F:/code/DSH-Policy/.experiments/agent-team/src/index.js
+      config:
+        directory: C:/Users/aivm/.dsh/agent-team/lineage
+        providerName: agent-team
+        maxGenerations: 8
+        maxDepth: 1
+        delivery: caller
+        registerTools: true
+        playbook: false
+
+# 可选：一个可选择的 preset，只在选中它的会话里注入策略手册。
+# 前提是同一 profile 里已经有上面的 profile 级实例（它拥有 provider 与工具）。
+#
+# - insert:
+#     - id: preset-strategy-mirror
+#       name: '@deepseek-ai/dsh-agent-preset'
+#       config:
+#         id: strategy-mirror
+#         name: Strategy mirror (agent-team)
+#         description: Runs author strategies over seeded members.
+#         order: 7
+#         plugins:
+#           - name: file:///F:/code/DSH-Policy/.experiments/agent-team/src/index.js
+#             config:
+#               provider: false
+#               registerTools: false
+#               playbook: true
+#               directory: C:/Users/aivm/.dsh/agent-team/lineage

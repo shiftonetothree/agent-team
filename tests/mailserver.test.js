@@ -1,0 +1,338 @@
+import assert from 'node:assert/strict'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+
+import { MailServer } from '../src/mailserver.js'
+import { buildToolDefinitions, createSeededFork } from '../src/api.js'
+import { balancedLog, fakeCtx, fakeSession } from './helpers.js'
+
+async function tempDir() {
+  return mkdtemp(join(tmpdir(), 'agent-team-mail-'))
+}
+
+test('a posted message is visible to the addressed member and consumed once', async () => {
+  const box = new MailServer({ sessionId: 's1', dir: await tempDir() })
+  const message = await box.post({
+    from: { childId: 'c-a', memberId: 'audit', generation: 0 },
+    toMember: 'produce',
+    body: 'the handler at a.ts:31 has no ownership check',
+    topic: 'finding',
+  })
+
+  const first = await box.inbox({ reader: { childId: 'c-b1', memberId: 'produce', generation: 0 } })
+  assert.equal(first.messages.length, 1)
+  assert.equal(first.messages[0].id, message.id)
+  assert.equal(first.messages[0].from.memberId, 'audit')
+
+  const again = await box.inbox({ reader: { childId: 'c-b1', memberId: 'produce', generation: 0 } })
+  assert.equal(again.messages.length, 0, 'acknowledged messages do not repeat for the same reader')
+
+  const withRead = await box.inbox({ reader: { childId: 'c-b1', memberId: 'produce', generation: 0 }, includeRead: true })
+  assert.equal(withRead.messages.length, 1)
+})
+
+test('an unread note to the previous generation reaches the next generation', async () => {
+  const box = new MailServer({ sessionId: 's1', dir: await tempDir() })
+  await box.post({
+    from: { childId: 'c-a', memberId: 'audit', generation: 0 },
+    toMember: 'reviewer',
+    body: 'check the second handler too',
+  })
+
+  // Generation 0 never reads it.
+  const next = await box.inbox({ reader: { childId: 'c-b2', memberId: 'reviewer', generation: 1 } })
+  assert.equal(next.messages.length, 1, 'the note carries over to the next incarnation')
+  assert.equal(next.messages[0].body, 'check the second handler too')
+})
+
+test('an explicitly addressed generation is invisible to later ones', async () => {
+  const box = new MailServer({ sessionId: 's1', dir: await tempDir() })
+  await box.post({
+    from: { childId: 'c-a', memberId: 'audit', generation: 0 },
+    toMember: 'reviewer',
+    toGeneration: 0,
+    body: 'only generation 0 should act on this',
+  })
+
+  const gen0 = await box.inbox({ reader: { childId: 'c-b0', memberId: 'reviewer', generation: 0 } })
+  assert.equal(gen0.messages.length, 1)
+  const gen1 = await box.inbox({ reader: { childId: 'c-b1', memberId: 'reviewer', generation: 1 } })
+  assert.equal(gen1.messages.length, 0)
+})
+
+test('another member never sees a message addressed to someone else', async () => {
+  const box = new MailServer({ sessionId: 's1', dir: await tempDir() })
+  await box.post({ from: { childId: 'c-a', memberId: 'audit', generation: 0 }, toMember: 'produce', body: 'for produce only' })
+  const other = await box.inbox({ reader: { childId: 'c-c', memberId: 'risk', generation: 0 } })
+  assert.equal(other.messages.length, 0)
+})
+
+test('messages survive a new MailServer instance over the same file', async () => {
+  const dir = await tempDir()
+  const first = new MailServer({ sessionId: 's-same', dir })
+  await first.post({ from: { childId: 'c-a', memberId: 'audit', generation: 0 }, toMember: 'reviewer', body: 'persisted' })
+  const second = new MailServer({ sessionId: 's-same', dir })
+  const inbox = await second.inbox({ reader: { childId: 'c-b', memberId: 'reviewer', generation: 0 } })
+  assert.equal(inbox.messages.length, 1)
+  assert.equal(inbox.messages[0].body, 'persisted')
+})
+
+test('member tools resolve identities and exchange one message between members', async () => {
+  const dir = await tempDir()
+  const parent = { session: fakeSession('parent-mail', []) }
+  const { ctx, sessions } = fakeCtx()
+  sessions.set('parent-mail', parent.session)
+  const api = createSeededFork(ctx, { directory: dir, providerName: 'p-mail' })
+  const tools = new Map(buildToolDefinitions(() => api).map(definition => [definition.name, definition]))
+
+  const first = await api.fork({ parent, memberId: 'audit', prompt: 'audit the handlers' })
+  sessions.get(first.childId).events.push(...balancedLog(1, () => 'handler a.ts:31 is unguarded'))
+
+  const roster = await tools.get('member_roster').execute({}, { agent: { session: { id: first.childId } } })
+  assert.deepEqual(roster.members.map(member => member.member_id), ['orchestrator', 'audit'])
+  assert.equal(roster.members[0].phase, 'orchestrator')
+  assert.equal(roster.members[1].generation, 0)
+
+  const posted = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'confirm b.ts:88 as well', topic: 'follow-up' },
+    { agent: { session: { id: first.childId } } },
+  )
+  assert.equal(posted.to_member, 'audit')
+
+  const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: first.childId } } })
+  assert.equal(inbox.messages.length, 1)
+  assert.equal(inbox.messages[0].from_member, 'audit')
+  assert.equal(inbox.messages[0].topic, 'follow-up')
+  assert.equal(inbox.messages[0].body, 'confirm b.ts:88 as well')
+
+  // The orchestrator has its own mailbox, not a global view.
+  const oversight = await tools.get('member_inbox').execute({}, { agent: { session: { id: 'parent-mail' } } })
+  assert.deepEqual(oversight.messages, [], 'the orchestrator cannot read mail addressed to a member')
+})
+
+test('a message from the orchestrator reaches the member', async () => {
+  const dir = await tempDir()
+  const parent = { session: fakeSession('parent-mail2', []) }
+  const { ctx, sessions } = fakeCtx()
+  sessions.set('parent-mail2', parent.session)
+  const api = createSeededFork(ctx, { directory: dir, providerName: 'p-mail2' })
+  const tools = new Map(buildToolDefinitions(() => api).map(definition => [definition.name, definition]))
+
+  const member = await api.fork({ parent, memberId: 'produce', prompt: 'write the fix' })
+  await tools.get('member_post').execute(
+    { to_member: 'produce', body: 'audit says a.ts:31 is unguarded; verify before fixing' },
+    { agent: { session: { id: 'parent-mail2' } } },
+  )
+  const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: member.childId } } })
+  assert.equal(inbox.messages.length, 1)
+  assert.equal(inbox.messages[0].from_member, 'orchestrator')
+})
+
+test('the child preamble names the member and generation and is not duplicated', async () => {
+  const dir = await tempDir()
+  const parent = { session: fakeSession('parent-pre', []) }
+  const { ctx, sessions, starts } = fakeCtx()
+  sessions.set('parent-pre', parent.session)
+  const api = createSeededFork(ctx, { directory: dir, providerName: 'p-pre' })
+
+  await api.fork({ parent, memberId: 'audit', prompt: 'audit the handlers' })
+  const prompt = starts[0].spec.request.prompt
+  assert.match(prompt[0].text, /^\[member "audit" generation 0\]/u)
+  assert.match(prompt[0].text, /member_inbox/u)
+  assert.equal(prompt[1].text, 'audit the handlers', 'the task stays its own block after the preamble')
+
+  await api.rotate({ parent, memberId: 'audit', prompt: 'go deeper' })
+  const second = starts[1].spec.request.prompt
+  assert.equal(second.filter(block => block.text?.startsWith('[member "')).length, 1)
+  assert.match(second[0].text, /generation 1/u)
+})
+
+test('posting to an unknown member warns instead of losing the message', async () => {
+  const dir = await tempDir()
+  const parent = { session: fakeSession('parent-mail3', []) }
+  const { ctx, sessions } = fakeCtx()
+  sessions.set('parent-mail3', parent.session)
+  const api = createSeededFork(ctx, { directory: dir, providerName: 'p-mail3' })
+  const tools = new Map(buildToolDefinitions(() => api).map(definition => [definition.name, definition]))
+
+  // A brief written before the member starts is legitimate: warn, keep the message.
+  const posted = await tools.get('member_post').execute(
+    { to_member: 'not-yet-started', body: 'read this first' },
+    { agent: { session: { id: 'parent-mail3' } } },
+  )
+  assert.match(posted.warning, /no member "not-yet-started" exists yet/u)
+
+  const known = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  const accepted = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'now it exists' },
+    { agent: { session: { id: known.childId } } },
+  )
+  assert.equal(accepted.warning, undefined)
+})
+
+async function wakeSetup({ autoWake, deferResults = false } = {}) {
+  const dir = await tempDir()
+  const parent = { session: fakeSession('parent-wake', []) }
+  const harness = fakeCtx({ deferResults })
+  harness.sessions.set('parent-wake', parent.session)
+  harness.ctx.agents = { get: id => (id === 'parent-wake' ? parent : undefined) }
+  const api = createSeededFork(harness.ctx, { directory: dir, providerName: 'p-wake', ...(autoWake === undefined ? {} : { autoWake }) })
+  const tools = new Map(buildToolDefinitions(() => api).map(definition => [definition.name, definition]))
+  return { ...harness, dir, parent, api, tools }
+}
+
+test('posting to a finished member starts its next generation so the message is read', async () => {
+  const { parent, api, tools, starts } = await wakeSetup()
+  const first = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await first.result
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal((await api.chain('audit'))[0].phase, 'settled')
+
+  const posted = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'one more finding to check' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+  assert.match(posted.wake, /started the next generation/u)
+  const chain = await api.chain('audit')
+  assert.equal(chain.length, 2, 'the wake created generation 1')
+  assert.equal(chain[1].seedFrom, first.childId, 'the wake inherits the finished generation')
+  // The wake's own task tells the new generation to read the mail.
+  const wakePrompt = starts.at(-1).spec.request.prompt.map(block => block.text).join('\n')
+  assert.match(wakePrompt, /member_inbox/u)
+})
+
+test('a running member is not woken again', async () => {
+  const { parent, api, tools } = await wakeSetup({ deferResults: true })
+  const first = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+
+  const posted = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'while you work' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+  assert.match(posted.wake, /still running/u)
+  assert.equal((await api.chain('audit')).length, 1)
+  first.activation.dispose()
+})
+
+test('the wake budget stops a message ping-pong', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: { maxPerMember: 1 } })
+  await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const firstPost = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'first nudge' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+  assert.match(firstPost.wake, /started the next generation/u)
+
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const secondPost = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'second nudge' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+  assert.match(secondPost.wake, /budget-exhausted/u)
+  assert.equal((await api.chain('audit')).length, 2, 'only the first post woke it')
+})
+
+test('autoWake:false disables the mechanism entirely', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const posted = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'nobody will read this' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+  assert.match(posted.wake, /disabled/u)
+  assert.equal((await api.chain('audit')).length, 1)
+})
+
+test('without a live orchestrator the wake is reported instead of pretended', async () => {
+  const dir = await tempDir()
+  const parent = { session: fakeSession('parent-alone', []) }
+  const harness = fakeCtx()
+  harness.sessions.set('parent-alone', parent.session)
+  const api = createSeededFork(harness.ctx, { directory: dir, providerName: 'p-alone' })
+  const tools = new Map(buildToolDefinitions(() => api).map(definition => [definition.name, definition]))
+  const first = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await first.result
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const posted = await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'no orchestrator to wake it' },
+    { agent: { session: { id: 'parent-alone' } } },
+  )
+  assert.match(posted.wake, /orchestrator-not-live/u)
+})
+
+test('the inbox is point-to-point: a bystander member sees nothing', async () => {
+  const { parent, api, tools } = await wakeSetup({ autoWake: false })
+  const a = await api.fork({ parent, memberId: 'a', prompt: 'post something' })
+  const b = await api.fork({ parent, memberId: 'b', prompt: 'wait for mail' })
+  const c = await api.fork({ parent, memberId: 'c', prompt: 'also waiting' })
+
+  await tools.get('member_post').execute(
+    { to_member: 'b', body: 'only b should read this' },
+    { agent: { session: { id: a.childId } } },
+  )
+
+  const asC = await tools.get('member_inbox').execute({}, { agent: { session: { id: c.childId } } })
+  assert.deepEqual(asC.messages, [], 'c must not see mail addressed to b')
+
+  const asB = await tools.get('member_inbox').execute({}, { agent: { session: { id: b.childId } } })
+  assert.equal(asB.messages.length, 1)
+  assert.equal(asB.messages[0].body, 'only b should read this')
+
+  const asA = await tools.get('member_inbox').execute({}, { agent: { session: { id: a.childId } } })
+  assert.deepEqual(asA.messages, [], 'the sender does not see its own outgoing message')
+})
+
+test('a child this plugin never reserved cannot read the mail store', async () => {
+  const { parent, api, tools, sessions } = await wakeSetup({ autoWake: false })
+  const member = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  await tools.get('member_post').execute(
+    { to_member: 'audit', body: 'member-only mail' },
+    { agent: { session: { id: 'parent-wake' } } },
+  )
+
+  const foreign = fakeSession('foreign-child', [])
+  foreign.header = { origin: 'subagent', parentSession: 'parent-wake' }
+  sessions.set('foreign-child', foreign)
+  const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: 'foreign-child' } } })
+  assert.deepEqual(inbox.messages, [], 'a non-member child gets an empty inbox, not the whole store')
+})
+
+test('a member can leave a message for the orchestrator, and only it reads it', async () => {
+  // Default autoWake: posting to the orchestrator address must not try to
+  // reincarnate anything, and must say so.
+  const { parent, api, tools } = await wakeSetup()
+  const a = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+
+  const posted = await tools.get('member_post').execute(
+    { to_member: 'orchestrator', body: 'found an unguarded handler at a.ts:31', topic: 'finding' },
+    { agent: { session: { id: a.childId } } },
+  )
+  assert.equal(posted.warning, undefined, 'the orchestrator address is always known')
+  assert.match(posted.wake, /orchestrator/u)
+
+  const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(inbox.messages.length, 1)
+  assert.equal(inbox.messages[0].from_member, 'audit')
+  assert.equal(inbox.messages[0].body, 'found an unguarded handler at a.ts:31')
+
+  // Another member never sees mail addressed to the orchestrator.
+  const b = await api.fork({ parent, memberId: 'produce', prompt: 'produce' })
+  const other = await tools.get('member_inbox').execute({}, { agent: { session: { id: b.childId } } })
+  assert.deepEqual(other.messages, [])
+})
+
+test('the store lives in one .mail.json file per orchestrator session', async () => {
+  const dir = await tempDir()
+  const box = new MailServer({ sessionId: 'session-abc', dir })
+  assert.match(box.filePath.replaceAll('\\', '/'), /\/session-abc\.mail\.json$/u)
+  await box.post({ from: { childId: 'c-a', memberId: 'audit', generation: 0 }, toMember: 'orchestrator', body: 'finding' })
+  const files = await (await import('node:fs/promises')).readdir(dir)
+  assert.deepEqual(files, ['session-abc.mail.json'])
+})

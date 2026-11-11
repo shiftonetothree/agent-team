@@ -1,0 +1,48 @@
+{
+  "name": "@commonworks/agent-team",
+  "version": "0.1.0",
+  "description": "Agent-team runtime for DeepSeek Harness: seeded-fork subagent generations, a durable lineage journal, and a point-to-point mail server so members can message each other",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./api": "./src/api.js",
+    "./seed": "./src/seed.js",
+    "./journal": "./src/journal.js",
+    "./mailserver": "./src/mailserver.js",
+    "./provider": "./src/provider.js"
+  },
+  "files": [
+    "src",
+    "scripts",
+    "profile",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:verbose": "node --test --test-reporter=spec tests/*.test.js",
+    "verify": "node scripts/verify-module.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "agent-team",
+    "subagent",
+    "deepseek-harness"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-subagent": "*",
+    "@deepseek-ai/dsh-session": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-subagent": { "optional": true },
+    "@deepseek-ai/dsh-session": { "optional": true }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "license": "MIT"
+}
