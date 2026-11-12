@@ -4,10 +4,15 @@
 
 - 零运行时依赖（不 import 任何 `@deepseek-ai/*` 包），以 `file:` 插件挂进 DSH。
 - 不改 `agent-loop`、不改 `dsh-subagent`。
-- 当前状态：**80 项单测全绿**，已在真实 DSH 客户端（0.2.2-rc.1）跑通代际继承、成员互发邮件、终止态自动唤醒。
+- 当前状态：**85 项单测全绿**，已在真实 DSH 客户端（0.2.2-rc.1）跑通代际继承、成员互发邮件、终止态自动唤醒。
 
 > 目录位置：`.experiments/agent-team/`。不参与 DSH 仓库的 pnpm workspace / 构建 / 门禁，git 里是未跟踪状态。
 > 运行时数据（账本、邮箱存储）默认写到 `$DSH_HOME/agent-team/lineage`，不落进用户仓库。
+
+## 鸣谢
+
+本项目的**思想源头**是 [DSH Policy](https://github.com/sdaniasdsd/DSH-Policy)：它以补丁形式改造 DeepSeek Harness 内核，提供成员会话、策略手册、任务编排这些能力。本项目的**主要目的就是用纯插件复刻 DSH Policy 的行为**——不碰 `agent-loop`、不碰 `dsh-subagent`，只靠公开的插件接口（`startActivation` 自带 childId、`agent/pre-step`、`systemPrompt.section`、工具注册）把同样的协作形态搭出来。凡是本插件"模拟"出来的语义，功劳归于 DSH Policy 的设计；凡是它的实现细节与本插件不同的地方，差异都在第 1 节说明。
+
 
 ---
 
