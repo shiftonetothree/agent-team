@@ -104,6 +104,8 @@ export function fakeCtx({ sessions = new Map(), deferResults = false } = {}) {
   /** @type {any[]} */
   const starts = []
 
+  /** @type {Map<string, any[]>} */
+  const listeners = new Map()
   /** @type {Map<string, any>} */
   const services = new Map()
 
@@ -164,7 +166,35 @@ export function fakeCtx({ sessions = new Map(), deferResults = false } = {}) {
       const disposer = fn()
       return () => (typeof disposer === 'function' ? disposer() : undefined)
     },
+    on(event, listener) {
+      const list = listeners.get(event) ?? []
+      list.push(listener)
+      listeners.set(event, list)
+      return () => {
+        const current = listeners.get(event) ?? []
+        listeners.set(event, current.filter(candidate => candidate !== listener))
+      }
+    },
   }
 
-  return { ctx, sessions, providers, starts, services }
+  /**
+   * Run the registered waterfall listeners for one event.
+   * @param {string} event - event name.
+   * @param {any} payload - event payload.
+   * @param {any} [initial] - starting decision.
+   * @returns {Promise<any>} the final decision.
+   */
+  async function emitWaterfall(event, payload, initial = { kind: 'continue', messages: [] }) {
+    const list = listeners.get(event) ?? []
+    let index = 0
+    const next = async () => {
+      if (index >= list.length) return initial
+      const listener = list[index]
+      index += 1
+      return listener(payload, next)
+    }
+    return next()
+  }
+
+  return { ctx, sessions, providers, starts, services, listeners, emitWaterfall }
 }

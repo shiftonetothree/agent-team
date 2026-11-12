@@ -171,6 +171,23 @@ Before each step, call member_inbox ... To reach another member, call member_ros
 
 子 agent 的轮次里没有可挂钩的插件事件，所以这是能做到的最强约束（提示 + 工具描述 + playbook）。
 
+#### 强制推送：邮件直接进入下一步（`agent/pre-step`）
+
+轮询靠模型自觉，实测它很少查。所以插件在 profile 级注册了 `agent/pre-step` 监听：**每一步开始前**，若该 agent 名下有未读邮件，就把邮件渲染成一条 snapshot 用户消息追加进这一步的输入。
+
+- 不是"提示去查"，而是内容已经在请求里；模型规划之前就看到了。
+- 因为它是 `user/message`（`source.kind = agent-team-mail`），会话日志会完整记录，符合"模型可见 ⟺ 已记录"。
+- 投递即删除：消息一旦注入就从信箱移除，同一封信不会重复推送。
+- 配置：`pushMailbox: false` 可关闭；关闭后退回"先轮询、再靠 `member_dispatch`"的旧路径。
+
+真机证据（headless，子 agent `3480dcab`）：编排者在成员运行期间投了一条 `额外口令是 5150`，子会话日志第 2 步出现
+
+```
+[agent-team-mail] You have 1 message(s) from other members, delivered now:
+- [orchestrator · 口令] 额外口令是 5150
+```
+
+随后该步骤就发起了工具调用——全程没有调用 `member_inbox`。编排者自己也验证过：给它自己投信后，它不查信箱也能答出内容。
 #### 死信与租约
 
 "派发"不是盖章，是**租约**：`member_dispatch` 把邮件记成 `dispatchedTo = <childId>`，但只要没人真正读过它，它仍然留在 `pending` 里。

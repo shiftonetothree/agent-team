@@ -5,12 +5,14 @@
  * namespace when the module also default-exports an object, so this module
  * exports only `name` / `inject` / `apply`. The programmatic API lives in
  * `./api.js`; this entry publishes the same instance as the `seededFork`
- * service so other plugins can reach it through `ctx.get('seededFork')`.
+ * service so other plugins can reach it through `ctx.get('seededFork')`, and
+ * mounts the mailbox push listener that puts unread mail inside each step.
  *
  * @module @commonworks/agent-team/plugin
  */
 
 import { createSeededFork } from './api.js'
+import { mountMailboxPush } from './mailbox-push.js'
 
 /** Plugin name used by the Loader. */
 export const name = 'agent-team'
@@ -19,7 +21,8 @@ export const name = 'agent-team'
 export const inject = ['subagents']
 
 /**
- * Mount the agent-team provider, its tools, and the `seededFork` service.
+ * Mount the agent-team provider, its tools, the `seededFork` service, and the
+ * mailbox push listener.
  * @param {any} ctx - cordis context.
  * @param {any} [config] - plugin config, passed through to `createSeededFork`.
  */
@@ -29,7 +32,11 @@ export function apply(ctx, config = {}) {
     // `provide` returns the exact disposer; cordis refuses plain property
     // assignment on a context.
     const removeService = ctx.provide('seededFork', api)
+    const removePush = config.pushMailbox === false
+      ? () => {}
+      : mountMailboxPush(ctx, { api })
     return () => {
+      removePush()
       removeService()
       api.dispose()
     }

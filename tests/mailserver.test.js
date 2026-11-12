@@ -704,3 +704,34 @@ test('a failed generation is left to the orchestrator, not auto-restarted', asyn
   const entry = await journal.entryOf(audit.childId)
   assert.equal(entry.phase, 'failed', 'the failure is recorded for the orchestrator to see')
 })
+
+test('unread mail is pushed into the member step instead of waiting for a poll', async () => {
+  const harness = await wakeSetup({ autoWake: false })
+  const { parent, api, tools, emitWaterfall, ctx } = harness
+  const { mountMailboxPush } = await import('../src/mailbox-push.js')
+  mountMailboxPush(ctx, { api })
+
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  const produce = await api.fork({ parent, memberId: 'produce', prompt: 'produce' })
+  await tools.get('member_post').execute(
+    { to_member: 'produce', body: 'a.ts:31 is unguarded', topic: 'finding' },
+    { agent: { session: { id: audit.childId } } },
+  )
+
+  const decision = await emitWaterfall('agent/pre-step', {
+    agent: { session: { id: produce.childId } },
+    turn: 1,
+    step: 2,
+  })
+  const pushed = decision.messages.at(-1).content[0].text
+  assert.match(pushed, /a\.ts:31 is unguarded/u)
+  assert.match(pushed, /delivered now/u)
+
+  // Delivery removes it: a later step has nothing to push.
+  const again = await emitWaterfall('agent/pre-step', {
+    agent: { session: { id: produce.childId } },
+    turn: 1,
+    step: 3,
+  })
+  assert.equal(again.messages.length, 0)
+})
