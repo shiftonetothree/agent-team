@@ -663,7 +663,7 @@ test('the settlement notice only tells the orchestrator to dispatch', async () =
   const { buildMailboxNotice, noticeText } = await import('../src/mailbox-notice.js')
   assert.match(noticeText({ total: 2, yours: 1, others: 1, role: 'orchestrator' }), /member_dispatch/u)
   assert.doesNotMatch(noticeText({ total: 2, yours: 1, others: 1, role: 'member' }), /member_dispatch/u)
-  assert.match(buildMailboxNotice({ total: 2, yours: 1, others: 1, role: 'member' }).content[0].text, /member_inbox/u)
+  assert.match(buildMailboxNotice({ total: 2, yours: 1, others: 1, role: 'member' }).content[0].text, /arrives by itself/u)
 })
 
 test('reading removes the message from the mailbox', async () => {

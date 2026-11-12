@@ -33,11 +33,11 @@ Dispatch with the strategy tools:
 - \`member_start\` starts or continues a member. Pass \`member_id\` (stable role name such as \`ground\`, \`produce\`, \`audit\`) and \`task\`. Calling it again with the same \`member_id\` continues that member, which keeps its earlier work and can re-examine it. Members started in the same stage run in parallel; a later stage starts only after the previous stage settles. State the peer links inside \`task\`: which members this one should message, about what, and what it should not route through you.
 - For verification and repair, call \`member_start\` again on the member that produced the work: the auditor must inherit what it is auditing, not be told about it.
 - \`member_roster\` lists the members this orchestration already started, with the exact ids to address.
-- \`member_post\` leaves a message for another member; the recipient reads it with \`member_inbox\`.
-- \`member_inbox\` reads the messages left for you and reports how much mail the server still holds, including mail addressed to others. Check it before each step: reading delivers a message, so each one is yours to act on exactly once.
+- \`member_post\` leaves a message for another member; it is delivered into that member's next step by itself.
+- \`member_inbox\` is the manual escape hatch: mail for you is delivered automatically at the start of the step that needs it, so do not poll. Use it only when you suspect a delivery was missed; reading delivers a message exactly once.
 - \`member_dispatch\` starts the members the mailbox asks for: it groups unread mail by addressee and starts that member again with the mail as its task.
 
-Mail is a second input channel, not a side channel. It reaches you two ways: your own \`member_inbox\` result, and the notice appended to this session when a member settles. Both report the server total. While that total is above zero, do not give the user a conclusion: call \`member_inbox\` for your own mail and \`member_dispatch\` for the mail addressed to members, then keep working. Never read mail addressed to another member; knowing that it exists is enough.
+Mail is a second input channel, not a side channel. It reaches you two ways: pushed into the step that needs it, and the notice appended to this session when a member settles. Both report the server total. While that total is above zero, do not give the user a conclusion: call \`member_inbox\` for your own mail and \`member_dispatch\` for the mail addressed to members, then keep working. Never read mail addressed to another member; knowing that it exists is enough.
 
 Members cannot address each other directly, so a cross-member hand-off goes through the mail server or through the parent's next \`task\`. Prefer the mail server while two members are working at the same time; prefer \`member_start\` on the same member when the second stage needs the first stage's own history.
 

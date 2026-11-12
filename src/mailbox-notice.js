@@ -27,8 +27,8 @@ export const NOTICE_KIND = 'agent-team-mailbox'
  */
 export function noticeText({ total, yours, others, role }) {
   const next = role === 'orchestrator'
-    ? 'Call member_inbox for yours and member_dispatch for the rest; you cannot read mail addressed to others.'
-    : 'Read yours with member_inbox; mail addressed to others is not yours to read.'
+    ? 'Your own mail arrives in this turn by itself; mail addressed to others is dispatched with member_dispatch, never read by you.'
+    : 'Mail for you arrives by itself at the start of the step that needs it; mail addressed to others is not yours to read.'
   return `[${NOTICE_KIND}] The mailbox server holds ${total} message(s): ${yours} for you, ${others} addressed to others. `
     + `${next} `
     + 'While the server is not empty, keep working instead of giving the user a conclusion.'

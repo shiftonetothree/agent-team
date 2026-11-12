@@ -162,11 +162,11 @@ preset 的注册方式：**等 `standard` 出现 → 克隆它的插件行 → �
 - **编排者也是信箱**：保留地址 `orchestrator`，成员可以给它投信；它没有总览权（全量读取的方法不存在），只能读到写给自己的邮件。
 - **非成员子会话**（例如用 DSH 原生 `subagent` 工具起的）查信箱返回空。
 - **服务器总量可见、内容不可见**：`member_inbox` 除了返回自己的邮件，还返回 `total`（服务器上的全部条数）与 `others`（其中不是给自己的条数）。知道"还有信"是必要的，"读别人的信"仍然不允许。
-- **每步轮询**靠 `fork`/`rotate` 拼在任务前的 preamble：
+- **不再要求轮询**：邮件由插件推送到步骤里（见下节），成员 preamble 明确写"不要查信箱，除非有人告诉你投递丢了"：
 
 ```
 [member "review" generation 1]
-Before each step, call member_inbox ... To reach another member, call member_roster for exact ids, then member_post.
+Mail for you is delivered by itself at the start of the step that needs it, so do not poll for it ...
 ```
 
 子 agent 的轮次里没有可挂钩的插件事件，所以这是能做到的最强约束（提示 + 工具描述 + playbook）。
@@ -242,7 +242,7 @@ Your peers are "orchestrator", "ground", "produce". When you need a fact, a chec
 or a hand-off, message that peer directly with member_post instead of asking the
 orchestrator to relay it; the orchestrator is for decisions and scope, not for
 passing notes between members.
-Before each step, call member_inbox ...
+Mail for you is delivered by itself at the start of the step that needs it ...
 ```
 
 同伴名单来自账本里已登记的成员（`memberRoster`），自己不会出现在名单里。

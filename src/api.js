@@ -211,8 +211,8 @@ export function withMemberPreamble(blocks, identity) {
   const text = `[member "${identity.memberId}"]\n`
     + `${peerLines.join('\n')}`
     + `Talk to a teammate directly when it owns the fact or the step you need; ${reportWhen}.\n`
-    + 'Before each step, call member_inbox to read messages that other members left for you; mail stays in your '
-    + 'mailbox until you read it; reading delivers it, so it leaves the mailbox. '
+    + 'Mail for you is delivered by itself at the start of the step that needs it, so do not poll for it: '
+    + 'do not call member_inbox unless something tells you a delivery was missed. '
     + 'If a peer is waiting on you, answer it before you finish: ending your turn while a peer still needs you '
     + 'forces the orchestrator to start you again.\n'
   const rest = Array.isArray(blocks) ? blocks : []
@@ -633,7 +633,7 @@ export function createSeededFork(ctx, config = {}) {
         enabled: true,
         maxPerMember: config.autoWake?.maxPerMember ?? 2,
         task: config.autoWake?.task
-          ?? 'Other members left you mail after you finished. Call member_inbox and act on what it says. '
+          ?? 'Other members left you mail after you finished. It is in this turn; act on it. '
             + 'This message supersedes your inherited instruction that the work was done: the mail is newer than your previous turn, '
             + 'even when that turn told you to stop or to answer something else. Then finish and report what changed. '
             + 'Do not post back unless you genuinely need something from them.',
@@ -1178,7 +1178,7 @@ export function buildToolDefinitions(getApi) {
     },
     {
       name: 'member_inbox',
-      description: 'Read messages left for you by other members. Call it after every member result and before each step. Reading delivers a message: it leaves the mailbox and is recorded in your own context, so it is never returned twice. Reading consumes the message for you only. The result also reports how many messages the server holds in total, including mail addressed to others; while that total is above zero, keep working instead of finishing.',
+      description: 'Read messages left for you by other members. Mail is normally delivered automatically at the start of the step that needs it, so use this only when you suspect a delivery was missed. Reading delivers a message: it leaves the mailbox and is recorded in your own context, so it is never returned twice. Reading consumes the message for you only. The result also reports how many messages the server holds in total, including mail addressed to others; while that total is above zero, keep working instead of finishing.',
       parameters: {
         type: 'object',
         properties: {
