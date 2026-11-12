@@ -787,3 +787,19 @@ test('when steer is refused the message stays in the mailbox', async () => {
   const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: 'parent-wake' } } })
   assert.equal(inbox.messages.length, 1, 'the mailbox keeps it when the steer path is unavailable')
 })
+
+test('without the push listener the preamble asks the member to poll instead', async () => {
+  const { withMemberPreamble } = await import('../src/api.js')
+  const { strategyPlaybook } = await import('../src/playbook.js')
+
+  const pushing = withMemberPreamble([{ type: 'text', text: 'audit' }], { memberId: 'audit', push: true })[0].text
+  assert.match(pushing, /do not poll/u)
+  assert.doesNotMatch(pushing, /call member_inbox before each step/u)
+
+  const polling = withMemberPreamble([{ type: 'text', text: 'audit' }], { memberId: 'audit', push: false })[0].text
+  assert.match(polling, /call member_inbox before each step/u)
+  assert.doesNotMatch(polling, /do not poll/u)
+
+  assert.match(strategyPlaybook({ push: false }), /check it before each step/u)
+  assert.match(strategyPlaybook({ push: true }), /do not poll/u)
+})

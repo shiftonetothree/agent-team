@@ -20,8 +20,18 @@ export const PLAYBOOK_SECTION = 'agent-team:strategy'
  */
 export const PLAYBOOK_ORDER = 2810
 
-/** The strategy playbook text. */
-export const STRATEGY_PLAYBOOK = `## Author strategy (agent-team)
+/**
+ * Build the strategy playbook.
+ *
+ * The mailbox sentence follows the deployment: with the push listener mounted,
+ * mail arrives by itself and polling is wasted work; without it, looking is the
+ * only way a member ever sees mail, so the playbook asks it to look.
+ *
+ * @param {{ push?: boolean }} [options] - whether the mailbox push is mounted.
+ * @returns {string} the playbook text.
+ */
+export function strategyPlaybook({ push = true } = {}) {
+  return `## Author strategy (agent-team)
 
 A member is a named child session. Each generation of a member starts with the completed transcript of the previous generation, so the same role can come back and re-examine its own earlier work. Use this layer when the user asks for a plan, a review pipeline, an audit, or any task whose value depends on independent verification rather than one pass.
 
@@ -34,7 +44,9 @@ Dispatch with the strategy tools:
 - For verification and repair, call \`member_start\` again on the member that produced the work: the auditor must inherit what it is auditing, not be told about it.
 - \`member_roster\` lists the members this orchestration already started, with the exact ids to address.
 - \`member_post\` leaves a message for another member; it is delivered into that member's next step by itself.
-- \`member_inbox\` is the manual escape hatch: mail for you is delivered automatically at the start of the step that needs it, so do not poll. Use it only when you suspect a delivery was missed; reading delivers a message exactly once.
+- ${push
+    ? '`member_inbox` is the manual escape hatch: mail for you is delivered automatically at the start of the step that needs it, so do not poll. Use it only when you suspect a delivery was missed; reading delivers a message exactly once.'
+    : '`member_inbox` is how you get your mail here: this deployment has no push, so check it before each step and after every member result; reading delivers a message exactly once.'}
 - \`member_dispatch\` starts the members the mailbox asks for: it groups unread mail by addressee and starts that member again with the mail as its task.
 
 Mail is a second input channel, not a side channel. It reaches you two ways: pushed into the step that needs it, and the notice appended to this session when a member settles. Both report the server total. While that total is above zero, do not give the user a conclusion: call \`member_inbox\` for your own mail and \`member_dispatch\` for the mail addressed to members, then keep working. Never read mail addressed to another member; knowing that it exists is enough.
@@ -55,6 +67,10 @@ Rules that keep the pipeline honest:
 5. Keep each \`task\` self-contained: the inherited transcript can be long, so ask for a bounded answer and state the output shape you expect.
 
 Report at the end: the stages that ran, which generation produced each finding, what was verified and how, and what remains unverified. Never present an unverified claim as confirmed.`
+}
+
+/** Playbook for a deployment whose mailbox push listener is mounted. */
+export const STRATEGY_PLAYBOOK = strategyPlaybook()
 
 /**
  * Build the prompt section contributed by this plugin.

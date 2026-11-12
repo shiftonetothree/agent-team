@@ -24,7 +24,7 @@ import { join } from 'node:path'
 
 import { JOURNAL_VERSION, LineageJournal } from './journal.js'
 import { SeededForkProvider } from './provider.js'
-import { strategyPlaybookSection } from './playbook.js'
+import { strategyPlaybook, strategyPlaybookSection } from './playbook.js'
 import { registerStrategyPreset } from './preset.js'
 import { MailServer } from './mailserver.js'
 import { appendMailboxNotice } from './mailbox-notice.js'
@@ -211,8 +211,11 @@ export function withMemberPreamble(blocks, identity) {
   const text = `[member "${identity.memberId}"]\n`
     + `${peerLines.join('\n')}`
     + `Talk to a teammate directly when it owns the fact or the step you need; ${reportWhen}.\n`
-    + 'Mail for you is delivered by itself at the start of the step that needs it, so do not poll for it: '
-    + 'do not call member_inbox unless something tells you a delivery was missed. '
+    + (identity.push === false
+      ? 'Mail for you is not pushed here: call member_inbox before each step and after every member result; '
+        + 'reading delivers a message exactly once. '
+      : 'Mail for you is delivered by itself at the start of the step that needs it, so do not poll for it: '
+        + 'do not call member_inbox unless something tells you a delivery was missed. ')
     + 'If a peer is waiting on you, answer it before you finish: ending your turn while a peer still needs you '
     + 'forces the orchestrator to start you again.\n'
   const rest = Array.isArray(blocks) ? blocks : []
@@ -305,7 +308,8 @@ export function createSeededFork(ctx, config = {}) {
   if (config.playbook === true) {
     const systemPrompt = ctx?.get?.('systemPrompt')
     if (typeof systemPrompt?.section === 'function') {
-      const section = strategyPlaybookSection(config.playbookText === undefined ? {} : { text: config.playbookText })
+      const playbookText = config.playbookText ?? strategyPlaybook({ push: config.pushMailbox !== false })
+      const section = strategyPlaybookSection({ text: playbookText })
       disposers.push(systemPrompt.section(section))
     }
   }
@@ -478,6 +482,7 @@ export function createSeededFork(ctx, config = {}) {
             : withMemberPreamble(toContent(options.prompt), {
                 memberId,
                 generation: reservation.generation,
+                push: config.pushMailbox !== false,
                 peers: options.peers ?? (await memberRoster(journal))
                   .filter(member => member.member_id !== memberId)
                   .map(member => ({
