@@ -674,6 +674,33 @@ export function createSeededFork(ctx, config = {}) {
    * @returns {Promise<{ woken: boolean, childId?: string, reason: string }>}
    */
   /**
+   * Deliver a message to the orchestrator through DSH's steer channel.
+   *
+   * The pre-step push only reaches an agent that takes another step. An idle
+   * orchestrator takes none, so a member writing to it would wait for the user to
+   * type something. A resident child may send to its direct parent, and that path
+   * starts a turn on an idle parent, which is what makes the delivery immediate.
+   *
+   * @param {any} sender - the member agent that authored the message.
+   * @param {string} orchestratorSessionId - the parent session to deliver to.
+   * @param {string} text - message text.
+   * @returns {Promise<boolean>} whether DSH accepted the message.
+   */
+  async function deliverToOrchestrator(sender, orchestratorSessionId, text) {
+    const subagents = ctx?.get?.('subagents')
+    if (typeof subagents?.sendMessage !== 'function') return false
+    try {
+      await subagents.sendMessage(sender, orchestratorSessionId, [{ type: 'text', text }], {
+        signal: new AbortController().signal,
+      })
+      return true
+    } catch {
+      // Adjacency, residency, or a closing parent: fall back to the mailbox.
+      return false
+    }
+  }
+
+  /**
    * Take the per-member generation lock shared by auto-wake and dispatch.
    *
    * Both paths start a generation for mail, so one lock keeps them from handing
@@ -773,6 +800,7 @@ export function createSeededFork(ctx, config = {}) {
     resolveCaller,
     wakeIfTerminal,
     orchestratorId: ORCHESTRATOR_MEMBER_ID,
+    deliverToOrchestrator,
     memberDeliveryState,
     claimMember,
     releaseMember,
@@ -1120,6 +1148,20 @@ export function buildToolDefinitions(getApi) {
           body: args.body,
           topic: args.topic,
         })
+        // A member writing to the orchestrator can deliver it right now: the steer
+        // channel starts a turn on an idle parent, where the pre-step push alone
+        // would wait for the user. Delivery removes the stored copy.
+        if (args.to_member === api.orchestratorId && caller.memberId !== api.orchestratorId) {
+          const text = `[mail from ${caller.memberId}]${args.topic === undefined ? '' : ` ${args.topic}`}: ${args.body}`
+          if (await api.deliverToOrchestrator(exec.agent, journal.sessionId, text)) {
+            await mailServer.discard([message.id])
+            return {
+              message_id: message.id,
+              to_member: message.toMember,
+              wake: 'delivered to the orchestrator now',
+            }
+          }
+        }
         // A finished member has no live runtime, so a message for it would sit
         // unread forever. Wake it now, before returning, so the caller learns
         // whether the message will actually be handled.

@@ -228,6 +228,24 @@ export class MailServer {
     })
   }
   /**
+   * Remove messages that were delivered outside the mailbox (for example by a
+   * steer that wakes the addressee), so they are not delivered twice.
+   * @param {string[]} ids - message ids.
+   * @returns {Promise<number>} how many were removed.
+   */
+  async discard(ids) {
+    return this.#serial(async () => {
+      await this.#load()
+      const drop = new Set(ids)
+      const before = this.#messages.length
+      this.#messages = this.#messages.filter(message => !drop.has(message.id))
+      const removed = before - this.#messages.length
+      if (removed > 0) await this.#persist()
+      return removed
+    })
+  }
+
+  /**
    * Unread mail addressed to a member, with its dispatch lease.
    *
    * A lease is not a tombstone: a message stays in this list until some

@@ -735,3 +735,55 @@ test('unread mail is pushed into the member step instead of waiting for a poll',
   })
   assert.equal(again.messages.length, 0)
 })
+
+test('a member writing to the orchestrator is delivered through the steer channel', async () => {
+  const harness = await wakeSetup({ autoWake: false })
+  const { parent, api, tools, ctx, sessions } = harness
+  /** @type {any[]} */
+  const sent = []
+  const realSubagents = ctx.get('subagents')
+  ctx.get = name => (name === 'subagents'
+    ? {
+        ...realSubagents,
+        sendMessage: async (sender, targetId, content) => {
+          sent.push({ from: sender.session.id, to: targetId, text: content[0].text })
+          return 'msg-steered'
+        },
+      }
+    : realSubagents)
+
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  const posted = await tools.get('member_post').execute(
+    { to_member: 'orchestrator', body: 'found an unguarded handler', topic: 'finding' },
+    { agent: { session: { id: audit.childId } } },
+  )
+
+  assert.equal(posted.wake, 'delivered to the orchestrator now')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].to, 'parent-wake')
+  assert.match(sent[0].text, /found an unguarded handler/u)
+  assert.match(sent[0].text, /audit/u)
+
+  // Delivered out of band, so the mailbox must not hold a second copy.
+  const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(inbox.messages.length, 0)
+})
+
+test('when steer is refused the message stays in the mailbox', async () => {
+  const harness = await wakeSetup({ autoWake: false })
+  const { parent, api, tools, ctx } = harness
+  const realSubagents = ctx.get('subagents')
+  ctx.get = name => (name === 'subagents'
+    ? { ...realSubagents, sendMessage: async () => { throw new Error('adjacency rejected') } }
+    : realSubagents)
+
+  const audit = await api.fork({ parent, memberId: 'audit', prompt: 'audit' })
+  const posted = await tools.get('member_post').execute(
+    { to_member: 'orchestrator', body: 'still queued' },
+    { agent: { session: { id: audit.childId } } },
+  )
+  assert.doesNotMatch(posted.wake, /delivered to the orchestrator now/u)
+
+  const inbox = await tools.get('member_inbox').execute({}, { agent: { session: { id: 'parent-wake' } } })
+  assert.equal(inbox.messages.length, 1, 'the mailbox keeps it when the steer path is unavailable')
+})

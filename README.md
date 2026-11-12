@@ -188,6 +188,27 @@ Before each step, call member_inbox ... To reach another member, call member_ros
 ```
 
 随后该步骤就发起了工具调用——全程没有调用 `member_inbox`。编排者自己也验证过：给它自己投信后，它不查信箱也能答出内容。
+#### 强制推送：主 agent 也能被"打醒"
+
+`agent/pre-step` 只在 agent **还有下一步**时有效。编排者空闲（这一轮已经答完、等用户）时没有下一步可推，成员写给它的信就会躺在信箱里。
+
+这一条走 DSH 的 steer 通道：成员（resident child）可以直接 `sendMessage` 给**直接父 agent**，而"an idle target starts a turn"——所以这次投递会**主动开一轮**。插件的做法：
+
+```
+member_post(to_member = "orchestrator")，且发信人是成员
+  ├─ sendMessage(member → orchestrator session, "[mail from <member>] <topic>: <body>")
+  │     成功 → 从信箱删除这条（已投递），返回 "delivered to the orchestrator now"
+  └─ 失败（不在相邻关系/父已关闭）→ 留在信箱，交给 pre-step 推送或 member_dispatch
+```
+
+真机证据（headless）：成员 `audit` 写完 8848 后，编排者会话里直接出现
+
+```
+[mail from audit] 报告: 报告：库存编码是 8848
+source: { kind: "agent-message", form: "relay", senderSessionId: "d0ea0051…" }
+```
+
+信箱里没有残留副本——投递即出队。
 #### 死信与租约
 
 "派发"不是盖章，是**租约**：`member_dispatch` 把邮件记成 `dispatchedTo = <childId>`，但只要没人真正读过它，它仍然留在 `pending` 里。
